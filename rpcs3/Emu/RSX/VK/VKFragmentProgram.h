@@ -54,6 +54,8 @@ public:
 
 	std::array<u32, 4> output_color_masks{ {} };
 
+	size_t hash;
+
 	std::vector<vk::glsl::program_input> uniforms;
 	void SetInputs(std::vector<vk::glsl::program_input>& uniforms);
 	/**

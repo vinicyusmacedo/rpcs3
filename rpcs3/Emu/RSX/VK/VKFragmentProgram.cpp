@@ -29,6 +29,7 @@ std::string VKFragmentDecompilerThread::compareFunction(COMPARE f, const std::st
 
 void VKFragmentDecompilerThread::insertHeader(std::stringstream & OS)
 {
+	OS << "// Hash: " << fmt::format("%llX", vk_prog->hash) << "\n\n";
 	OS << "#version 420\n";
 	OS << "#extension GL_ARB_separate_shader_objects: enable\n\n";
 }
@@ -361,10 +362,12 @@ VKFragmentProgram::~VKFragmentProgram()
 
 void VKFragmentProgram::Decompile(const RSXFragmentProgram& prog)
 {
+	hash = program_hash_util::fragment_program_utils::get_fragment_program_ucode_hash(prog);
+
 	u32 size;
 	VKFragmentDecompilerThread decompiler(shader, parr, prog, size, *this);
 	decompiler.Task();
-	
+
 	for (const ParamType& PT : decompiler.m_parr.params[PF_PARAM_UNIFORM])
 	{
 		for (const ParamItem& PI : PT.items)
@@ -377,6 +380,15 @@ void VKFragmentProgram::Decompile(const RSXFragmentProgram& prog)
 
 			size_t offset = atoi(PI.name.c_str() + 2);
 			FragmentConstantOffsetCache.push_back(offset);
+		}
+	}
+
+	if (g_cfg.video.enable_shader_overriding) {
+		std::string override_file = Emu.GetCachePath() + "/shaders_override/" + fmt::format("%llX.fp", hash);
+		if (fs::is_file(override_file))
+		{
+			LOG_ERROR(RSX, "Overriding FP shader %llX with %s", hash, override_file);
+			shader = fs::file(override_file).to_string();
 		}
 	}
 }

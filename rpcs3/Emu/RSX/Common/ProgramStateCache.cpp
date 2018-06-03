@@ -5,6 +5,9 @@ using namespace program_hash_util;
 
 size_t vertex_program_utils::get_vertex_program_ucode_hash(const RSXVertexProgram &program)
 {
+	if (program.program_hash)
+		return program.program_hash;
+
 	// 64-bit Fowler/Noll/Vo FNV-1a hash code
 	size_t hash = 0xCBF29CE484222325ULL;
 	const qword *instbuffer = (const qword*)program.data.data();
@@ -192,6 +195,9 @@ fragment_program_utils::fragment_program_metadata fragment_program_utils::analys
 
 size_t fragment_program_utils::get_fragment_program_ucode_hash(const RSXFragmentProgram& program)
 {
+	if (program.program_hash)
+		return program.program_hash;
+
 	// 64-bit Fowler/Noll/Vo FNV-1a hash code
 	size_t hash = 0xCBF29CE484222325ULL;
 	const qword *instbuffer = (const qword*)program.addr;

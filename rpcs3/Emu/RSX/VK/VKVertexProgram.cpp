@@ -27,6 +27,7 @@ std::string VKVertexDecompilerThread::compareFunction(COMPARE f, const std::stri
 
 void VKVertexDecompilerThread::insertHeader(std::stringstream &OS)
 {
+	OS << "// Hash: " << fmt::format("%llX", vk_prog->hash) << "\n\n";
 	OS << "#version 450\n\n";
 	OS << "#extension GL_ARB_separate_shader_objects : enable\n";
 	OS << "layout(std140, set = 0, binding = 0) uniform VertexContextBuffer\n";
@@ -336,8 +337,19 @@ VKVertexProgram::~VKVertexProgram()
 
 void VKVertexProgram::Decompile(const RSXVertexProgram& prog)
 {
+	size_t hash = program_hash_util::vertex_program_utils::get_vertex_program_ucode_hash(prog);
+
 	VKVertexDecompilerThread decompiler(prog, shader, parr, *this);
 	decompiler.Task();
+
+	if (g_cfg.video.enable_shader_overriding) {
+		std::string override_file = Emu.GetCachePath() + "/shaders_override/" + fmt::format("%llX.vp", hash);
+		if (fs::is_file(override_file))
+		{
+			LOG_NOTICE(RSX, "Overriding VP shader %llX with %s", hash, override_file);
+			shader = fs::file(override_file).to_string();
+		}
+	}
 }
 
 void VKVertexProgram::Compile()

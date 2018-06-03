@@ -49,6 +49,8 @@ public:
 	std::string shader;
 	std::vector<vk::glsl::program_input> uniforms;
 
+	size_t hash;
+
 	void Decompile(const RSXVertexProgram& prog);
 	void Compile();
 	void SetInputs(std::vector<vk::glsl::program_input>& inputs);

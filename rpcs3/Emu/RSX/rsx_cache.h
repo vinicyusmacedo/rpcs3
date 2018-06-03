@@ -687,6 +687,7 @@ namespace rsx
 			RSXVertexProgram vp = {};
 			vp.data = data;
 			vp.skip_vertex_input_check = true;
+			vp.program_hash = program_hash;
 
 			return vp;
 		}
@@ -702,6 +703,7 @@ namespace rsx
 			RSXFragmentProgram fp = {};
 			fragment_program_data[program_hash] = data;
 			fp.addr = fragment_program_data[program_hash].data();
+			fp.program_hash = program_hash;
 
 			return fp;
 		}
