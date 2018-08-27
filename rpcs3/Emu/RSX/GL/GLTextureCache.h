@@ -252,7 +252,7 @@ namespace gl
 
 		void reset(u32 base, u32 size, bool /*flushable*/=false)
 		{
-			rsx::protection_policy policy = g_cfg.video.strict_rendering_mode ? rsx::protection_policy::protect_policy_full_range : rsx::protection_policy::protect_policy_conservative;
+			rsx::protection_policy policy = rsx::protection_policy::protect_policy_full_range;
 			rsx::buffered_section::reset(base, size, policy);
 
 			flushed = false;
@@ -463,6 +463,7 @@ namespace gl
 		bool flush()
 		{
 			if (flushed) return true; //Already written, ignore
+			AUDIT( is_locked() );
 
 			bool result = true;
 			if (!synchronized)
@@ -486,6 +487,7 @@ namespace gl
 			flushed = true;
 
 			const auto valid_range = get_confirmed_range();
+			verify(HERE), valid_range.second > 0;
 			void *dst = get_raw_ptr(valid_range.first, true);
 
 			glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo_id);

@@ -10,6 +10,7 @@
 #include "rsx_utils.h"
 #include <thread>
 
+
 namespace rsx
 {
 	enum protection_policy
@@ -26,6 +27,7 @@ namespace rsx
 		confirmed_range
 	};
 
+
 	class buffered_section
 	{
 	private:
@@ -33,6 +35,11 @@ namespace rsx
 		u32 locked_address_range = 0;
 		weak_ptr locked_memory_ptr;
 		std::pair<u32, u32> confirmed_range;
+
+#ifdef TEXTURE_CACHE_PROTECTION_DEBUG
+		// 4GB memory space / 4096 bytes per page = 1048576 pages
+		static inline volatile u8 page_protection_information[1048576] = { 0 };
+#endif
 
 		inline void tag_memory()
 		{
@@ -87,7 +94,10 @@ namespace rsx
 			else
 				locked_address_range = align(base + length, 4096) - locked_address_base;
 
-			verify(HERE), locked_address_range > 0;
+			AUDIT( (locked_address_base == (u32)(base & ~4095u)) || (locked_address_base == (u32)align(base, 4096u)) );
+			AUDIT( locked_address_base + locked_address_range <= align(base + length, 4096u) );
+			AUDIT( locked_address_range % 4096u == 0 );
+			verify(HERE), locked_address_range >= 4096u;
 		}
 
 	public:
@@ -114,14 +124,15 @@ namespace rsx
 		{
 			if (prot == protection && !force) return;
 
-			verify(HERE), locked_address_range > 0;
-			utils::memory_protect(vm::base(locked_address_base), locked_address_range, prot);
+			verify(HERE), locked_address_range >= 4096u;
+			memory_protect(locked_address_base, locked_address_range, prot);
 			protection = prot;
 			locked = prot != utils::protection::rw;
 
 			if (prot == utils::protection::no)
 			{
 				locked_memory_ptr = rsx::get_super_ptr(cpu_address_base, cpu_address_range);
+				verify(HERE), locked_memory_ptr;
 				tag_memory();
 			}
 			else
@@ -140,10 +151,6 @@ namespace rsx
 		{
 			if (prot != utils::protection::rw)
 			{
-				const auto old_prot = protection;
-				const auto old_locked_base = locked_address_base;
-				const auto old_locked_length = locked_address_range;
-
 				if (confirmed_range.second)
 				{
 					const u32 range_limit = std::max(range_confirm.first + range_confirm.second, confirmed_range.first + confirmed_range.second);
@@ -153,6 +160,7 @@ namespace rsx
 				else
 				{
 					confirmed_range = range_confirm;
+					verify(HERE), range_confirm.second > 0;
 				}
 
 				init_lockable_range(confirmed_range.first + cpu_address_base, confirmed_range.second);
@@ -161,12 +169,12 @@ namespace rsx
 			protect(prot, true);
 		}
 
-		void unprotect()
+		inline void unprotect()
 		{
 			protect(utils::protection::rw);
 		}
 
-		void discard()
+		inline void discard()
 		{
 			protection = utils::protection::rw;
 			dirty = true;
@@ -231,13 +239,10 @@ namespace rsx
 		 * Check if the page containing the address tramples this section. Also compares a former trampled page range to compare
 		 * If true, returns the range <min, max> with updated invalid range
 		 */
-		std::tuple<bool, std::pair<u32, u32>> overlaps_page(const std::pair<u32, u32>& old_range, u32 address, overlap_test_bounds bounds) const
+		std::tuple<bool, std::pair<u32, u32>> overlaps_page(const std::pair<u32, u32>& old_range, overlap_test_bounds bounds) const
 		{
-			const u32 page_base = address & ~4095;
-			const u32 page_limit = page_base + 4096;
-
-			const u32 compare_min = std::min(old_range.first, page_base);
-			const u32 compare_max = std::max(old_range.second, page_limit);
+			const u32 compare_base = old_range.first;
+			const u32 compare_limit = old_range.first + old_range.second;
 
 			u32 memory_base, memory_range;
 			switch (bounds)
@@ -265,12 +270,43 @@ namespace rsx
 				fmt::throw_exception("Unreachable" HERE);
 			}
 
-			if (!region_overlaps(memory_base, memory_base + memory_range, compare_min, compare_max))
+			if (!region_overlaps(memory_base, memory_base + memory_range, compare_base, compare_limit))
 				return std::make_tuple(false, old_range);
 
-			const u32 _min = std::min(memory_base, compare_min);
-			const u32 _max = std::max(memory_base + memory_range, compare_max);
-			return std::make_tuple(true, std::make_pair(_min, _max));
+			const u32 _min = std::min(memory_base, compare_base);
+			const u32 _max = std::max(memory_base + memory_range, compare_limit);
+			return std::make_tuple(true, std::make_pair(_min, _max - _min));
+		}
+
+		bool inside_range(const std::pair<u32, u32>& range, overlap_test_bounds bounds) const
+		{
+			u32 memory_base, memory_range;
+			switch (bounds)
+			{
+			case overlap_test_bounds::full_range:
+			{
+				memory_base = (cpu_address_base & ~4095);
+				memory_range = align(cpu_address_base + cpu_address_range, 4096u) - memory_base;
+				break;
+			}
+			case overlap_test_bounds::protected_range:
+			{
+				memory_base = locked_address_base;
+				memory_range = locked_address_range;
+				break;
+			}
+			case overlap_test_bounds::confirmed_range:
+			{
+				const auto range = get_confirmed_range();
+				memory_base = (cpu_address_base + range.first) & ~4095;
+				memory_range = align(cpu_address_base + range.first + range.second, 4096u) - memory_base;
+				break;
+			}
+			default:
+				fmt::throw_exception("Unreachable" HERE);
+			}
+
+			return (memory_base >= range.first && memory_base + memory_range <= range.first + range.second);
 		}
 
 		bool is_locked() const
@@ -330,7 +366,7 @@ namespace rsx
 				return false;
 			}
 
-			const u32* first = locked_memory_ptr.get<u32>(confirmed_range.first);
+			volatile const u32* first = locked_memory_ptr.get<u32>(confirmed_range.first);
 			return (*first == (cpu_address_base + confirmed_range.first));
 		}
 
@@ -342,7 +378,7 @@ namespace rsx
 			}
 
 			const u32 valid_limit = (confirmed_range.second) ? confirmed_range.first + confirmed_range.second : cpu_address_range;
-			const u32* last = locked_memory_ptr.get<u32>(valid_limit - 4);
+			volatile const u32* last = locked_memory_ptr.get<u32>(valid_limit - 4);
 			return (*last == (cpu_address_base + valid_limit - 4));
 		}
 
@@ -373,7 +409,47 @@ namespace rsx
 
 			return confirmed_range;
 		}
+
+		inline static void memory_protect(u32 start, u32 range, utils::protection prot)
+		{
+			verify(HERE), start % 4096u == 0 && range % 4096u == 0;
+			//LOG_ERROR(RSX, "memory_protect(0x%x, 0x%x, %x)", static_cast<u32>(start), static_cast<u32>(range), static_cast<u32>(prot));
+			utils::memory_protect(vm::base(start), range, prot);
+#ifdef TEXTURE_CACHE_PROTECTION_DEBUG
+			memset((void*)&page_protection_information[start / 4096u], static_cast<u8>(prot), range / 4096u);
+#endif
+		}
+
+
+#ifdef TEXTURE_CACHE_PROTECTION_DEBUG
+		inline static utils::protection query_page_protection(u32 address)
+		{
+			verify(HERE), address % 4096u == 0;
+			utils::protection prot = static_cast<utils::protection>(page_protection_information[address / 4096u]);
+			return prot;
+		}
+
+		void verify_protection() const
+		{
+			if (!locked || dirty)
+				return;
+			verify(HERE), locked_address_range >= 4096;
+			verify(HERE), locked_address_base % 4096u == 0 && locked_address_range % 4096u == 0;
+			verify(HERE), protection != utils::protection::rw;
+			for (u32 addr = locked_address_base; addr < locked_address_base + locked_address_range; addr += 4096u)
+			{
+				utils::protection page_protection = query_page_protection(addr);
+				if (page_protection != protection)
+				{
+					LOG_ERROR(RSX, "Page protection mismatch (addr=0x%x, prot=0x%x vs 0x%x)", addr, static_cast<u32>(protection), static_cast<u32>(page_protection));
+					__debugbreak();
+					fmt::throw_exception("Page protection mismatch (addr=0x%x, prot=0x%x vs 0x%x)", addr, static_cast<u32>(protection), static_cast<u32>(page_protection));
+				}
+			}
+		}
+#endif // TEXTURE_CACHE_PROTECTION_DEBUG
 	};
+
 
 	template <typename pipeline_storage_type, typename backend_storage>
 	class shaders_cache

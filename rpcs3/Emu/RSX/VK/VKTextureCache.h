@@ -32,7 +32,7 @@ namespace vk
 			if (length > cpu_address_range)
 				release_dma_resources();
 
-			rsx::protection_policy policy = g_cfg.video.strict_rendering_mode ? rsx::protection_policy::protect_policy_full_range : rsx::protection_policy::protect_policy_conservative;
+			rsx::protection_policy policy = rsx::protection_policy::protect_policy_full_range;
 			rsx::buffered_section::reset(base, length, policy);
 		}
 
@@ -283,6 +283,7 @@ namespace vk
 		bool flush(vk::command_buffer& cmd, VkQueue submit_queue)
 		{
 			if (flushed) return true;
+			AUDIT( is_locked() );
 
 			if (m_device == nullptr)
 			{
@@ -303,6 +304,7 @@ namespace vk
 			flushed = true;
 
 			const auto valid_range = get_confirmed_range();
+			verify(HERE), valid_range.second > 0;
 			void* pixels_src = dma_buffer->map(valid_range.first, valid_range.second);
 			void* pixels_dst = get_raw_ptr(valid_range.first, true);
 
