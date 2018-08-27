@@ -727,9 +727,14 @@ namespace rsx
 		return g_current_renderer;
 	}
 
-	static inline bool region_overlaps(u32 base1, u32 limit1, u32 base2, u32 limit2)
+	static constexpr inline bool region_overlaps(u32 base1, u32 limit1, u32 base2, u32 limit2)
 	{
 		return (base1 < limit2 && base2 < limit1);
+	}
+
+	static constexpr inline bool address_overlaps(u32 address, u32 base, u32 limit)
+	{
+		return (base <= address && address < limit);
 	}
 
 	template <int N>
