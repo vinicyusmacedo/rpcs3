@@ -970,6 +970,7 @@ namespace gl
 
 			if (context != rsx::texture_upload_context::blit_engine_dst)
 			{
+				AUDIT( cached.get_memory_read_flags() != rsx::memory_read_flags::flush_always );
 				cached.protect(utils::protection::ro);
 			}
 			else

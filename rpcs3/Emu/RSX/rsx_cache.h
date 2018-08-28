@@ -36,7 +36,7 @@ namespace rsx
 		weak_ptr locked_memory_ptr;
 		std::pair<u32, u32> confirmed_range; // cpu_range delta
 
-#ifdef TEXTURE_CACHE_PROTECTION_DEBUG
+#ifdef TEXTURE_CACHE_DEBUG
 		// 4GB memory space / 4096 bytes per page = 1048576 pages
 		static inline volatile u8 page_protection_information[1048576] = { 0 };
 #endif
@@ -88,10 +88,10 @@ namespace rsx
 				}
 			}
 			else
-				locked_range.end = page_end(base + length);
+				locked_range.end = page_end(base + length - 1);
 
 			AUDIT( (locked_range.start == page_start(base)) || (locked_range.start == next_page(base)) );
-			AUDIT( locked_range.end < next_page(base + length) );
+			AUDIT( locked_range.end < next_page(base + length - 1) );
 			verify(HERE), locked_range.is_page_range();
 		}
 
@@ -292,7 +292,7 @@ namespace rsx
 
 			const u32 confirmed_start = cpu_range.start + confirmed_range.first;
 			const u32 confirmed_end = confirmed_start + confirmed_range.second;
-			return { confirmed_start, confirmed_end };
+			return address_range::create_start_end(confirmed_start, confirmed_end);
 		}
 
 		std::pair<u32, u32> get_confirmed_range() const
@@ -356,7 +356,7 @@ namespace rsx
 			locked_memory_ptr.flush(offset, write_length);
 		}
 
-		// TODO: these tests are no longer necessary with full-range protection enabled
+		// ruipin TODO: these tests are no longer necessary with full-range protection enabled
 		bool test_memory_head()
 		{
 			if (!locked_memory_ptr)
@@ -391,15 +391,15 @@ namespace rsx
 			const u32 start = range.start;
 			const u32 length = range.length();
 
-			//LOG_ERROR(RSX, "memory_protect({0x%x->0x%x}, %x)", static_cast<u32>(start), static_cast<u32>(length), static_cast<u32>(prot));
+			//LOG_ERROR(RSX, "memory_protect({0x%x->0x%x}, %x)", static_cast<u32>(start), static_cast<u32>(length-1), static_cast<u32>(prot));
 			utils::memory_protect(vm::base(start), length, prot);
 
-#ifdef TEXTURE_CACHE_PROTECTION_DEBUG
+#ifdef TEXTURE_CACHE_DEBUG
 			memset((void*)&page_protection_information[range.start / 4096u], static_cast<u8>(prot), range.length() / 4096u);
 #endif
 		}
 
-#ifdef TEXTURE_CACHE_PROTECTION_DEBUG
+#ifdef TEXTURE_CACHE_DEBUG
 		inline static utils::protection query_page_protection(u32 address)
 		{
 			verify(HERE), address % 4096u == 0;
@@ -419,11 +419,12 @@ namespace rsx
 				utils::protection page_protection = query_page_protection(addr);
 				if (page_protection != protection)
 				{
+					//__debugbreak();
 					fmt::throw_exception("Page protection mismatch (addr=0x%x, prot=0x%x vs 0x%x)", addr, static_cast<u32>(protection), static_cast<u32>(page_protection));
 				}
 			}
 		}
-#endif // TEXTURE_CACHE_PROTECTION_DEBUG
+#endif // TEXTURE_CACHE_DEBUG
 	};
 
 
