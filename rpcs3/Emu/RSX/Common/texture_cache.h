@@ -15,7 +15,7 @@ namespace rsx
 		invalidation_chain_none,         // No chaining: Only sections that overlap the faulting page get invalidated.
 		invalidation_chain_full,         // Full chaining: Sections overlapping the faulting page get invalidated, as well as any sections overlapping invalidated sections.
 		invalidation_chain_synchronized  // Full chaining, excluding sections that are not synchronized and do not overlap the faulting page (in order to avoid a cache miss)
-		//invalidation_chain_nearby, // Invalidations chain if they are near to the fault (<X pages away)
+		//invalidation_chain_nearby,     // Invalidations chain if they are near to the fault (<X pages away)
 	};
 
 	/*
@@ -23,8 +23,8 @@ namespace rsx
 	enum invalidation_chaining_direction
 	{
 		invalidation_chaining_direction_both,
-		invalidation_chaining_direction_forward,  // Only higher-address pages chain
-		invalidation_chaining_direction_backward, // Only lower-address pages chain
+		invalidation_chaining_direction_forward,  // Only higher-base-address sections chain (unless they overlap the fault)
+		invalidation_chaining_direction_backward, // Only lower-base-address pages chain (unless they overlap the fault)
 	};*/
 
 	enum texture_create_flags
@@ -616,11 +616,57 @@ namespace rsx
 			std::vector<address_range> result;
 			result.reserve(marked_sections.size() + sections_to_exclude.size());
 
-			// Copy ranges to result
+			// Copy ranges to result, merging them if possible
 			for (const auto &section : marked_sections)
 			{
-				result.push_back(section->get_protected_range());
+				auto &new_range = section->get_protected_range();
+				AUDIT( new_range.is_page_range() );
+
+				// Search for ranges that touch new_range. If found, merge instead of adding new_range.
+				// Note the case where we have
+				//   AAAA  BBBB
+				//      CCCC
+				// If we have result={A,B}, and new_range=C, we have to merge A with C, then B with A and invalidate B
+				address_range *found = nullptr;
+				for (auto &existing : result)
+				{
+					if (!existing.valid())
+						continue;
+
+					// range1 overlaps, is immediately before, or is immediately after range2
+					if (existing.touches(new_range))
+					{
+						if (found != nullptr)
+						{
+							// Already found a match, merge and invalidate "existing"
+							found->set_min_max(existing);
+							existing.invalidate();
+						}
+						else
+						{
+							// First match, merge "new_range"
+							existing.set_min_max(new_range);
+							found = &existing;
+						}
+					}
+				}
+
+				// Add to list if we didn't find any range to merge with
+				if (found == nullptr)
+				{
+					result.push_back(new_range);
+				}
 			}
+
+#ifdef TEXTURE_CACHE_PROTECTION_DEBUG
+			// naive check that there are no overlaps
+			for (const auto &range1 : result)
+			{
+				if (!range1.valid()) continue;
+				for (const auto &range2 : result)
+					verify(HERE), range1 == range2 || !range2.valid() || !range1.touches(range2);
+			}
+#endif // TEXTURE_CACHE_PROTECTION_DEBUG
 
 			// Subtract from the result the excluded regions
 			for (const auto &excluded : sections_to_exclude)
@@ -701,6 +747,14 @@ namespace rsx
 					}
 					verify(HERE), found || !must_be_present;
 				}
+			}
+
+			// naive check that there are no overlaps
+			for (const auto &range1 : result)
+			{
+				if (!range1.valid()) continue;
+				for (const auto &range2 : result)
+					verify(HERE), range1 == range2 || !range2.valid() || !range1.touches(range2);
 			}
 #endif // TEXTURE_CACHE_PROTECTION_DEBUG
 

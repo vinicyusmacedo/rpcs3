@@ -564,14 +564,27 @@ namespace rsx
 			return range_inside_range(start, end, other.start, other.end);
 		}
 
-		// Utilities
-		address_range get_min_max(const address_range &other) const
+		inline bool touches(const address_range &other) const
 		{
-			AUDIT( valid() || other.valid() );
+			AUDIT( valid() && other.valid() );
+			// returns true if there is overlap, or if sections are side-by-side
+			return overlaps(other) || other.start == next_address() || other.end == prev_address();
+		}
+
+		// Utilities
+		inline address_range get_min_max(const address_range &other) const
+		{
 			return {
-				std::min(start, other.start),
-				std::max(end, other.end)
+				std::min(valid() ? start : UINT32_MAX, other.valid() ? other.start : UINT32_MAX),
+				std::max(valid() ? end : 0, other.valid() ? other.end : 0)
 			};
+		}
+
+		void set_min_max(const address_range &other)
+		{
+			const address_range _range = get_min_max(other);
+			start = _range.start;
+			end = _range.end;
 		}
 
 		inline bool is_page_range() const

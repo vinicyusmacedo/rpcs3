@@ -387,8 +387,13 @@ namespace rsx
 		inline static void memory_protect(const address_range &range, utils::protection prot)
 		{
 			verify(HERE), range.is_page_range();
-			//LOG_ERROR(RSX, "memory_protect(0x%x, 0x%x, %x)", static_cast<u32>(start), static_cast<u32>(range), static_cast<u32>(prot));
-			utils::memory_protect(vm::base(range.start), range.length(), prot);
+
+			const u32 start = range.start;
+			const u32 length = range.length();
+
+			//LOG_ERROR(RSX, "memory_protect({0x%x->0x%x}, %x)", static_cast<u32>(start), static_cast<u32>(length), static_cast<u32>(prot));
+			utils::memory_protect(vm::base(start), length, prot);
+
 #ifdef TEXTURE_CACHE_PROTECTION_DEBUG
 			memset((void*)&page_protection_information[range.start / 4096u], static_cast<u8>(prot), range.length() / 4096u);
 #endif
