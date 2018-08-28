@@ -226,7 +226,7 @@ namespace gl
 		void init_buffer()
 		{
 			const f32 resolution_scale = (context == rsx::texture_upload_context::framebuffer_storage? rsx::get_resolution_scale() : 1.f);
-			const u32 real_buffer_size = (resolution_scale <= 1.f) ? cpu_address_range : (u32)(resolution_scale * resolution_scale * cpu_address_range);
+			const u32 real_buffer_size = (resolution_scale <= 1.f) ? get_section_size() : (u32)(resolution_scale * resolution_scale * get_section_size());
 			const u32 buffer_size = align(real_buffer_size, 4096);
 
 			if (pbo_id)
@@ -288,7 +288,7 @@ namespace gl
 			if (rsx_pitch > 0)
 				this->rsx_pitch = rsx_pitch;
 			else
-				this->rsx_pitch = cpu_address_range / height;
+				this->rsx_pitch = get_section_size() / height;
 
 			this->width = w;
 			this->height = h;
@@ -468,7 +468,7 @@ namespace gl
 			bool result = true;
 			if (!synchronized)
 			{
-				LOG_WARNING(RSX, "Cache miss at address 0x%X. This is gonna hurt...", cpu_address_base);
+				LOG_WARNING(RSX, "Cache miss at address 0x%X. This is gonna hurt...", get_section_base());
 				copy_texture();
 
 				if (!synchronized)

@@ -76,6 +76,11 @@ namespace rsx
 		}
 	}
 
+	weak_ptr get_super_ptr(address_range &range)
+	{
+		return get_super_ptr(range.start, range.length());
+	}
+
 	weak_ptr get_super_ptr(u32 addr, u32 len)
 	{
 		verify(HERE), g_current_renderer;
