@@ -8,6 +8,7 @@
 #include <memory>
 #include <bitset>
 #include <optional>
+#include <sstream>
 
 extern "C"
 {
@@ -463,7 +464,160 @@ namespace rsx
 
 	std::array<float, 4> get_constant_blend_colors();
 
+	/**
+	  * Addresses and Address Ranges
+      */
+	constexpr inline u32 page_start(u32 addr)
+	{
+		return addr & ~4095u;
+	}
+
+	constexpr inline u32 next_page(u32 addr)
+	{
+		return page_start(addr + 4096u);
+	}
+
+	constexpr inline u32 page_end(u32 addr)
+	{
+		return next_page(addr) - 1;
+	}
+
+	struct address_range
+	{
+		u32 start = UINT32_MAX; // First address in range
+		u32 end = 0; // Last address
+
+	private:
+		// Helper constexprs
+		static constexpr inline bool range_overlaps(u32 start1, u32 end1, u32 start2, u32 end2)
+		{
+			return (start1 <= end2 && start2 <= end1);
+		}
+
+		static constexpr inline bool address_overlaps(u32 address, u32 start, u32 end)
+		{
+			return (start <= address && address <= end);
+		}
+
+		static constexpr inline bool range_inside_range(u32 start1, u32 end1, u32 start2, u32 end2)
+		{
+			return (start1 >= start2 && end1 <= end2);
+		}
+
+	public:
+		// Constructors
+		inline address_range() = default;
+		inline address_range(const address_range &other) : start(other.start), end(other.end) {};
+		inline address_range(const u32 _start, const u32 _end) : start(_start), end(_end) {};
+		//explicit inline address_range(const std::pair<u32, u32> &pair, const bool uses_length = true) : start(pair.first), end(uses_length ? pair.first + pair.second : pair.second) {};
+
+		static inline address_range from_length(const u32 _start, const u32 _length)
+		{
+			return address_range(_start, _start + _length - 1);
+		}
+
+		// Length
+		inline u32 length() const
+		{
+			AUDIT( valid() );
+			return end - start + 1;
+		}
+
+		inline void set_length(const u32 new_length)
+		{
+			end = start + new_length - 1;
+			AUDIT( valid() );
+		}
+
+		inline u32 next_address() const
+		{
+			return end + 1;
+		}
+
+		inline u32 prev_address() const
+		{
+			return start - 1;
+		}
+
+		// Overlapping checks
+		inline bool overlaps(const address_range &other) const
+		{
+			AUDIT( valid() && other.valid() );
+			return range_overlaps(start, end, other.start, other.end);
+		}
+
+		inline bool overlaps(const u32 _start, const u32 _end) const
+		{
+			AUDIT( start < end );
+			return range_overlaps(start, end, _start, _end);
+		}
+
+		inline bool overlaps(const u32 addr) const
+		{
+			AUDIT( valid() );
+			return address_overlaps(addr, start, end);
+		}
+
+		inline bool inside(const address_range &other) const
+		{
+			AUDIT( valid() && other.valid() );
+			return range_inside_range(start, end, other.start, other.end);
+		}
+
+		// Utilities
+		address_range get_min_max(const address_range &other) const
+		{
+			AUDIT( valid() || other.valid() );
+			return {
+				std::min(start, other.start),
+				std::max(end, other.end)
+			};
+		}
+
+		inline bool is_page_range() const
+		{
+			return (valid() && start % 4096u == 0 && length() % 4096u == 0);
+		}
+
+		// Validity
+		inline bool valid() const
+		{
+			return (start <= end);
+		}
+
+		inline void invalidate()
+		{
+			start = UINT32_MAX;
+			end = 0;
+		}
+
+		// Comparison Operators
+		inline bool operator ==(const address_range &other) const
+		{
+			return (start == other.start && end == other.end);
+		}
+
+		inline bool operator !=(const address_range &other) const
+		{
+			return (start != other.start || end != other.end);
+		}
+
+		// Debug
+		inline std::string str() const
+		{
+			std::stringstream ss;
+			ss << std::hex << '{' << start << "->" << end << '}';
+			return ss.str();
+		}
+	};
+
+	inline address_range page_for(u32 addr)
+	{
+		return address_range(page_start(addr), page_end(addr));
+	}
+
 	// Acquire memory mirror with r/w permissions
+	weak_ptr get_super_ptr(address_range &range);
 	weak_ptr get_super_ptr(u32 addr, u32 size);
 
 	/**
@@ -725,16 +879,6 @@ namespace rsx
 	static inline thread* get_current_renderer()
 	{
 		return g_current_renderer;
-	}
-
-	static constexpr inline bool region_overlaps(u32 base1, u32 limit1, u32 base2, u32 limit2)
-	{
-		return (base1 < limit2 && base2 < limit1);
-	}
-
-	static constexpr inline bool address_overlaps(u32 address, u32 base, u32 limit)
-	{
-		return (base <= address && address < limit);
 	}
 
 	template <int N>

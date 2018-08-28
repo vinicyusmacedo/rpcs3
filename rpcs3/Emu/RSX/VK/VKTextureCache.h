@@ -29,7 +29,7 @@ namespace vk
 
 		void reset(u32 base, u32 length)
 		{
-			if (length > cpu_address_range)
+			if (length > get_section_base())
 				release_dma_resources();
 
 			rsx::protection_policy policy = rsx::protection_policy::protect_policy_full_range;
@@ -57,7 +57,7 @@ namespace vk
 			if (rsx_pitch > 0)
 				this->rsx_pitch = rsx_pitch;
 			else
-				this->rsx_pitch = cpu_address_range / height;
+				this->rsx_pitch = get_section_size() / height;
 
 			//Even if we are managing the same vram section, we cannot guarantee contents are static
 			//The create method is only invoked when a new mangaged session is required
@@ -145,7 +145,7 @@ namespace vk
 			if (dma_buffer.get() == nullptr)
 			{
 				auto memory_type = m_device->get_memory_mapping().host_visible_coherent;
-				dma_buffer.reset(new vk::buffer(*m_device, align(cpu_address_range, 256), memory_type, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, 0));
+				dma_buffer.reset(new vk::buffer(*m_device, align(get_section_size(), 256), memory_type, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, 0));
 			}
 
 			if (manage_cb_lifetime)
@@ -247,18 +247,18 @@ namespace vk
 			{
 				verify (HERE), mem_target->value != dma_buffer->value;
 
-				vk::insert_buffer_memory_barrier(cmd, mem_target->value, 0, cpu_address_range,
+				vk::insert_buffer_memory_barrier(cmd, mem_target->value, 0, get_section_size(),
 					VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 					VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
 
-				shuffle_kernel->run(cmd, mem_target, cpu_address_range);
+				shuffle_kernel->run(cmd, mem_target, get_section_size());
 
-				vk::insert_buffer_memory_barrier(cmd, mem_target->value, 0, cpu_address_range,
+				vk::insert_buffer_memory_barrier(cmd, mem_target->value, 0, get_section_size(),
 					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
 					VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
 
 				VkBufferCopy copy = {};
-				copy.size = cpu_address_range;
+				copy.size = get_section_size();
 				vkCmdCopyBuffer(cmd, mem_target->value, dma_buffer->value, 1, &copy);
 			}
 
@@ -295,7 +295,7 @@ namespace vk
 
 			if (!synchronized)
 			{
-				LOG_WARNING(RSX, "Cache miss at address 0x%X. This is gonna hurt...", cpu_address_base);
+				LOG_WARNING(RSX, "Cache miss at address 0x%X. This is gonna hurt...", get_section_base());
 				copy_texture(true, cmd, submit_queue);
 				result = false;
 			}
