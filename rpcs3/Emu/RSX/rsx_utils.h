@@ -504,16 +504,21 @@ namespace rsx
 			return (start1 >= start2 && end1 <= end2);
 		}
 
+		inline address_range(u32 _start, u32 _end) : start(_start), end(_end) {};
+
 	public:
 		// Constructors
 		inline address_range() = default;
 		inline address_range(const address_range &other) : start(other.start), end(other.end) {};
-		inline address_range(const u32 _start, const u32 _end) : start(_start), end(_end) {};
-		//explicit inline address_range(const std::pair<u32, u32> &pair, const bool uses_length = true) : start(pair.first), end(uses_length ? pair.first + pair.second : pair.second) {};
 
-		static inline address_range from_length(const u32 _start, const u32 _length)
+		static inline address_range create_start_length(u32 _start, u32 _length)
 		{
 			return address_range(_start, _start + _length - 1);
+		}
+
+		static inline address_range create_start_end(u32 _start, u32 _end)
+		{
+			return address_range(_start, _end);
 		}
 
 		// Length
@@ -571,6 +576,34 @@ namespace rsx
 			return overlaps(other) || other.start == next_address() || other.end == prev_address();
 		}
 
+		inline s32 distance(const address_range &other) const
+		{
+			if (touches(other))
+				return 0;
+
+			// other after this
+			if (other.start > end)
+				return (s32)(other.start - end - 1);
+
+			// this after other
+			AUDIT(start > other.end);
+			return -((s32)(start - other.end - 1));
+		}
+
+		inline u32 abs_distance(const address_range &other) const
+		{
+			if (touches(other))
+				return 0;
+
+			// other after this
+			if (other.start > end)
+				return (other.start - end - 1);
+
+			// this after other
+			AUDIT(start > other.end);
+			return (start - other.end - 1);
+		}
+
 		// Utilities
 		inline address_range get_min_max(const address_range &other) const
 		{
@@ -590,6 +623,20 @@ namespace rsx
 		inline bool is_page_range() const
 		{
 			return (valid() && start % 4096u == 0 && length() % 4096u == 0);
+		}
+
+		inline address_range to_page_range() const
+		{
+			AUDIT( valid() );
+			return { page_start(start), page_end(end) };
+		}
+
+		inline void page_align()
+		{
+			AUDIT( valid() );
+			start = page_start(start);
+			end = page_end(end);
+			AUDIT( is_page_range() );
 		}
 
 		// Validity
@@ -626,7 +673,7 @@ namespace rsx
 
 	inline address_range page_for(u32 addr)
 	{
-		return address_range(page_start(addr), page_end(addr));
+		return address_range::create_start_end(page_start(addr), page_end(addr));
 	}
 
 	// Acquire memory mirror with r/w permissions
