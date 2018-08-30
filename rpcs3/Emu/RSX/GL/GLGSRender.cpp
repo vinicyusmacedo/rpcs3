@@ -1647,10 +1647,10 @@ bool GLGSRender::on_access_violation(u32 address, bool is_writing)
 	return true;
 }
 
-void GLGSRender::on_invalidate_memory_range(u32 address_base, u32 size)
+void GLGSRender::on_invalidate_memory_range(const rsx::address_range &range)
 {
 	//Discard all memory in that range without bothering with writeback (Force it for strict?)
-	if (m_gl_texture_cache.invalidate_range(address_base, size, true, true, false).violation_handled)
+	if (m_gl_texture_cache.invalidate_range(range, true, true, false).violation_handled)
 	{
 		m_gl_texture_cache.purge_dirty();
 		{

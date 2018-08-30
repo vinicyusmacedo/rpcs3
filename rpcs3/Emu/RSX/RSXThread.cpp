@@ -1356,17 +1356,15 @@ namespace rsx
 
 				for (const auto& range : m_invalidated_memory_ranges)
 				{
-					on_invalidate_memory_range(range.first, range.second);
+					on_invalidate_memory_range(range);
 
 					// Clean the main memory super_ptr cache if invalidated
-					const auto range_end = range.first + range.second;
 					for (auto It = main_super_memory_block.begin(); It != main_super_memory_block.end();)
 					{
 						const auto mem_start = It->first;
 						const auto mem_end = mem_start + It->second.size();
-						const bool overlaps = (mem_start < range_end && range.first < mem_end);
 
-						if (overlaps)
+						if (range.overlaps(address_range::create_start_end(mem_start, mem_end)))
 						{
 							It = main_super_memory_block.erase(It);
 						}
@@ -2670,11 +2668,11 @@ namespace rsx
 		check_zcull_status(false);
 	}
 
-	void thread::on_notify_memory_unmapped(u32 base_address, u32 size)
+	void thread::on_notify_memory_unmapped(u32 address, u32 size)
 	{
-		if (!m_rsx_thread_exiting && base_address < 0xC0000000)
+		if (!m_rsx_thread_exiting && address < 0xC0000000)
 		{
-			u32 ea = base_address >> 20, io = RSXIOMem.io[ea];
+			u32 ea = address >> 20, io = RSXIOMem.io[ea];
 
 			if (io < 512)
 			{
@@ -2695,7 +2693,7 @@ namespace rsx
 			}
 
 			std::lock_guard lock(m_mtx_task);
-			m_invalidated_memory_ranges.push_back({ base_address, size });
+			m_invalidated_memory_ranges.push_back(address_range::create_start_length(address, size));
 		}
 	}
 
