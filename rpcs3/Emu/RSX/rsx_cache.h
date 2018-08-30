@@ -36,6 +36,12 @@ namespace rsx
 		weak_ptr locked_memory_ptr;
 		std::pair<u32, u32> confirmed_range; // cpu_range delta
 
+		const protection_policy guard_policy = protect_policy_full_range;
+		utils::protection protection = utils::protection::rw;
+
+		bool locked = false;
+		bool dirty = false;
+
 #ifdef TEXTURE_CACHE_DEBUG
 		// 4GB memory space / 4096 bytes per page = 1048576 pages
 		static inline volatile u8 page_protection_information[1048576] = { 0 };
@@ -56,13 +62,6 @@ namespace rsx
 				locked_memory_ptr.flush(valid_limit - 4, 4);
 			}
 		}
-
-	protected:
-		utils::protection protection = utils::protection::rw;
-		protection_policy guard_policy;
-
-		bool locked = false;
-		bool dirty = false;
 
 		inline void init_lockable_range(u32 base, u32 length)
 		{
@@ -90,26 +89,23 @@ namespace rsx
 			else
 				locked_range.end = page_end(base + length - 1);
 
-			AUDIT( (locked_range.start == page_start(base)) || (locked_range.start == next_page(base)) );
-			AUDIT( locked_range.end < next_page(base + length - 1) );
+			AUDIT((locked_range.start == page_start(base)) || (locked_range.start == next_page(base)));
+			AUDIT(locked_range.end < next_page(base + length - 1));
 			verify(HERE), locked_range.is_page_range();
 		}
 
 	public:
+		buffered_section() {};
+		~buffered_section() {};
 
-		buffered_section() {}
-		~buffered_section() {}
-
-		void reset(u32 base, u32 length, protection_policy protect_policy = protect_policy_full_range)
+		void reset(const address_range &memory_range)
 		{
-			verify(HERE), locked == false;
+			verify(HERE), memory_range.valid() && locked == false;
 
-			cpu_range.start = base;
-			cpu_range.set_length(length);
+			cpu_range = address_range(memory_range);
 
 			confirmed_range = { 0, 0 };
 			protection = utils::protection::rw;
-			guard_policy = protect_policy;
 			locked = false;
 
 			init_lockable_range(cpu_range.start, cpu_range.length());

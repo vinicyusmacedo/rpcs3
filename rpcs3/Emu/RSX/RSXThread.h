@@ -347,7 +347,7 @@ namespace rsx
 		std::shared_ptr<rsx::overlays::display_manager> m_overlay_manager;
 
 		// Invalidated memory range
-		std::vector<std::pair<u32, u32>> m_invalidated_memory_ranges;
+		std::vector<address_range> m_invalidated_memory_ranges;
 
 	public:
 		RsxDmaControl* ctrl = nullptr;
@@ -495,7 +495,7 @@ namespace rsx
 		virtual void flip(int buffer) = 0;
 		virtual u64 timestamp();
 		virtual bool on_access_violation(u32 /*address*/, bool /*is_writing*/) { return false; }
-		virtual void on_invalidate_memory_range(u32 /*address*/, u32 /*range*/) {}
+		virtual void on_invalidate_memory_range(const address_range & /*range*/) {}
 		virtual void notify_tile_unbound(u32 /*tile*/) {}
 
 		// zcull

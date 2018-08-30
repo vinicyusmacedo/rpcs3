@@ -249,11 +249,11 @@ namespace gl
 		}
 
 	public:
+		using rsx::cached_texture_section::cached_texture_section;
 
-		void reset(u32 base, u32 size, bool /*flushable*/=false)
+		void reset(const rsx::address_range &memory_range)
 		{
-			rsx::protection_policy policy = rsx::protection_policy::protect_policy_full_range;
-			rsx::buffered_section::reset(base, size, policy);
+			rsx::cached_texture_section::reset(memory_range);
 
 			flushed = false;
 			synchronized = false;
@@ -593,11 +593,11 @@ namespace gl
 
 		void destroy()
 		{
-			if (!locked && pbo_id == 0 && vram_texture == nullptr && m_fence.is_empty())
+			if (!is_locked() && pbo_id == 0 && vram_texture == nullptr && m_fence.is_empty())
 				//Already destroyed
 				return;
 
-			if (locked)
+			if (is_locked())
 				unprotect();
 
 			if (pbo_id == 0)
@@ -632,7 +632,7 @@ namespace gl
 
 		bool is_flushable() const
 		{
-			return (protection == utils::protection::no);
+			return (get_protection() == utils::protection::no);
 		}
 
 		bool is_flushed() const
@@ -690,7 +690,7 @@ namespace gl
 		}
 	};
 
-	class texture_cache : public rsx::texture_cache<void*, cached_texture_section, gl::texture*, gl::texture_view*, gl::texture, gl::texture::format>
+	class texture_cache : public rsx::texture_cache<void*, gl::cached_texture_section, gl::texture*, gl::texture_view*, gl::texture, gl::texture::format>
 	{
 	private:
 
@@ -724,10 +724,10 @@ namespace gl
 		blitter m_hw_blitter;
 		std::vector<discardable_storage> m_temporary_surfaces;
 
-		cached_texture_section& create_texture(gl::viewable_image* image, u32 texaddr, u32 texsize, u32 w, u32 h, u32 depth, u32 mipmaps)
+		cached_texture_section& create_texture(gl::viewable_image* image, const rsx::address_range &tex_range, u32 w, u32 h, u32 depth, u32 mipmaps)
 		{
-			cached_texture_section& tex = find_cached_texture(texaddr, texsize, true, w, h, depth);
-			tex.reset(texaddr, texsize, false);
+			cached_texture_section& tex = find_cached_texture(tex_range, true, w, h, depth);
+			tex.reset(tex_range);
 			tex.create_read_only(image, w, h, depth, mipmaps);
 			read_only_range = tex.get_min_max(read_only_range);
 			return tex;
@@ -738,12 +738,7 @@ namespace gl
 			for (auto &address_range : m_cache)
 			{
 				auto &range_data = address_range.second;
-				for (auto &tex : range_data.data)
-				{
-					tex.destroy();
-				}
-
-				range_data.data.resize(0);
+				range_data.clear();
 			}
 
 			clear_temporary_subresources();
@@ -953,7 +948,7 @@ namespace gl
 					dst->image()->id(), GL_TEXTURE_2D, 0, 0, 0, 0, width, height, 1);
 		}
 
-		cached_texture_section* create_new_texture(void*&, u32 rsx_address, u32 rsx_size, u16 width, u16 height, u16 depth, u16 mipmaps, u32 gcm_format,
+		cached_texture_section* create_new_texture(void*&, const rsx::address_range &rsx_range, u16 width, u16 height, u16 depth, u16 mipmaps, u32 gcm_format,
 				rsx::texture_upload_context context, rsx::texture_dimension_extended type, rsx::texture_create_flags flags) override
 		{
 			auto image = gl::create_texture(gcm_format, width, height, depth, mipmaps, type);
@@ -961,7 +956,7 @@ namespace gl
 			const auto swizzle = get_component_mapping(gcm_format, flags);
 			image->set_native_component_layout(swizzle);
 
-			auto& cached = create_texture(image, rsx_address, rsx_size, width, height, depth, mipmaps);
+			auto& cached = create_texture(image, rsx_range, width, height, depth, mipmaps);
 			cached.set_dirty(false);
 			cached.set_view_flags(flags);
 			cached.set_context(context);
@@ -1006,7 +1001,7 @@ namespace gl
 
 				//NOTE: Protection is handled by the caller
 				cached.make_flushable();
-				cached.set_dimensions(width, height, depth, (rsx_size / height));
+				cached.set_dimensions(width, height, depth, (rsx_range.length() / height));
 				no_access_range = cached.get_min_max(no_access_range);
 			}
 
@@ -1018,7 +1013,8 @@ namespace gl
 			rsx::texture_upload_context context, const std::vector<rsx_subresource_layout>& subresource_layout, rsx::texture_dimension_extended type, bool input_swizzled) override
 		{
 			void* unused = nullptr;
-			auto section = create_new_texture(unused, rsx_address, pitch * height, width, height, depth, mipmaps, gcm_format, context, type,
+			const rsx::address_range rsx_range = rsx::address_range::create_start_length(rsx_address, pitch * height);
+			auto section = create_new_texture(unused, rsx_range, width, height, depth, mipmaps, gcm_format, context, type,
 				rsx::texture_create_flags::default_component_order);
 
 			gl::upload_texture(section->get_raw_texture()->id(), rsx_address, gcm_format, width, height, depth, mipmaps,
@@ -1112,7 +1108,7 @@ namespace gl
 			if (found == m_cache.end())
 				return false;
 
-			if (found->second.valid_count == 0)
+			if (found->second.get_valid_count() == 0)
 				return false;
 
 			for (auto& tex : found->second.data)
@@ -1163,7 +1159,7 @@ namespace gl
 							gl::texture::format::depth_stencil : gl::texture::format::depth;
 					}
 
-					flush_if_cache_miss_likely(fmt, result.real_dst_address, result.real_dst_size);
+					flush_if_cache_miss_likely(fmt, result.to_address_range());
 				}
 
 				return true;

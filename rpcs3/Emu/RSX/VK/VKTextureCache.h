@@ -24,16 +24,14 @@ namespace vk
 		std::unique_ptr<vk::buffer> dma_buffer;
 
 	public:
+		using rsx::cached_texture_section::cached_texture_section;
 
-		cached_texture_section() {}
-
-		void reset(u32 base, u32 length)
+		void reset(const rsx::address_range &memory_range)
 		{
-			if (length > get_section_base())
+			if (memory_range.length() > get_section_base())
 				release_dma_resources();
 
-			rsx::protection_policy policy = rsx::protection_policy::protect_policy_full_range;
-			rsx::buffered_section::reset(base, length, policy);
+			rsx::cached_texture_section::reset(memory_range);
 		}
 
 		void create(u16 w, u16 h, u16 depth, u16 mipmaps, vk::image *image, u32 rsx_pitch, bool managed, u32 gcm_format, bool pack_swap_bytes = false)
@@ -119,7 +117,7 @@ namespace vk
 		bool is_flushable() const
 		{
 			//This section is active and can be flushed to cpu
-			return (protection == utils::protection::no);
+			return (get_protection() == utils::protection::no);
 		}
 
 		bool is_flushed() const
@@ -408,7 +406,7 @@ namespace vk
 		}
 	};
 
-	class texture_cache : public rsx::texture_cache<vk::command_buffer, cached_texture_section, vk::image*, vk::image_view*, vk::image, VkFormat>
+	class texture_cache : public rsx::texture_cache<vk::command_buffer, vk::cached_texture_section, vk::image*, vk::image_view*, vk::image, VkFormat>
 	{
 	private:
 		//Vulkan internals
@@ -440,7 +438,7 @@ namespace vk
 					tex.release_dma_resources();
 				}
 
-				range_data.data.resize(0);
+				range_data.data.clear();
 			}
 
 			m_discardable_storage.clear();
@@ -779,7 +777,7 @@ namespace vk
 			vk::change_image_layout(cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, subresource_range);
 		}
 
-		cached_texture_section* create_new_texture(vk::command_buffer& cmd, u32 rsx_address, u32 rsx_size, u16 width, u16 height, u16 depth, u16 mipmaps, u32 gcm_format,
+		cached_texture_section* create_new_texture(vk::command_buffer& cmd, const rsx::address_range &rsx_range, u16 width, u16 height, u16 depth, u16 mipmaps, u32 gcm_format,
 				rsx::texture_upload_context context, rsx::texture_dimension_extended type, rsx::texture_create_flags flags) override
 		{
 			const u16 section_depth = depth;
@@ -849,8 +847,8 @@ namespace vk
 
 			change_image_layout(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, { aspect_flags, 0, mipmaps, 0, layer });
 
-			cached_texture_section& region = find_cached_texture(rsx_address, rsx_size, true, width, height, section_depth);
-			region.reset(rsx_address, rsx_size);
+			cached_texture_section& region = find_cached_texture(rsx_range, true, width, height, section_depth);
+			region.reset(rsx_range);
 			region.create(width, height, section_depth, mipmaps, image, 0, true, gcm_format);
 			region.set_dirty(false);
 			region.set_context(context);
@@ -878,7 +876,8 @@ namespace vk
 		cached_texture_section* upload_image_from_cpu(vk::command_buffer& cmd, u32 rsx_address, u16 width, u16 height, u16 depth, u16 mipmaps, u16 pitch, u32 gcm_format,
 			rsx::texture_upload_context context, const std::vector<rsx_subresource_layout>& subresource_layout, rsx::texture_dimension_extended type, bool swizzled) override
 		{
-			auto section = create_new_texture(cmd, rsx_address, pitch * height, width, height, depth, mipmaps, gcm_format, context, type,
+			const rsx::address_range rsx_range = rsx::address_range::create_start_length(rsx_address, pitch * height);
+			auto section = create_new_texture(cmd, rsx_range, width, height, depth, mipmaps, gcm_format, context, type,
 					rsx::texture_create_flags::default_component_order);
 
 			auto image = section->get_raw_texture();
@@ -985,7 +984,7 @@ namespace vk
 			if (found == m_cache.end())
 				return false;
 
-			if (found->second.valid_count == 0)
+			if (found->second.get_valid_count() == 0)
 				return false;
 
 			for (auto& tex : found->second.data)
@@ -1228,7 +1227,7 @@ namespace vk
 			{
 				if (reply.real_dst_size)
 				{
-					flush_if_cache_miss_likely(helper.format, reply.real_dst_address, reply.real_dst_size, cmd, m_submit_queue);
+					flush_if_cache_miss_likely(helper.format, reply.to_address_range(), cmd, m_submit_queue);
 				}
 
 				return true;

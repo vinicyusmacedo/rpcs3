@@ -893,10 +893,10 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 	return false;
 }
 
-void VKGSRender::on_invalidate_memory_range(u32 address_base, u32 size)
+void VKGSRender::on_invalidate_memory_range(const rsx::address_range &range)
 {
 	std::lock_guard lock(m_secondary_cb_guard);
-	if (m_texture_cache.invalidate_range(address_base, size, true, true, false,
+	if (m_texture_cache.invalidate_range(range, true, true, false,
 		m_secondary_command_buffer, m_swapchain->get_graphics_queue()).violation_handled)
 	{
 		m_texture_cache.purge_dirty();
@@ -2625,9 +2625,9 @@ void VKGSRender::prepare_rtts(rsx::framebuffer_creation_context context)
 			if (old_format == VK_FORMAT_UNDEFINED)
 				old_format = vk::get_compatible_surface_format(m_surface_info[i].color_format).first;
 
-			m_texture_cache.set_memory_read_flags(m_surface_info[i].address, m_surface_info[i].pitch * m_surface_info[i].height, rsx::memory_read_flags::flush_once);
-			m_texture_cache.flush_if_cache_miss_likely(old_format, m_surface_info[i].address, m_surface_info[i].pitch * m_surface_info[i].height,
-				*m_current_command_buffer, m_swapchain->get_graphics_queue());
+			const rsx::address_range rsx_range = m_surface_info[i].get_memory_range();
+			m_texture_cache.set_memory_read_flags(rsx_range, rsx::memory_read_flags::flush_once);
+			m_texture_cache.flush_if_cache_miss_likely(old_format, rsx_range, *m_current_command_buffer, m_swapchain->get_graphics_queue());
 		}
 
 		m_surface_info[i].address = m_surface_info[i].pitch = 0;
@@ -2641,9 +2641,9 @@ void VKGSRender::prepare_rtts(rsx::framebuffer_creation_context context)
 		if (m_depth_surface_info.pitch && g_cfg.video.write_depth_buffer)
 		{
 			auto old_format = vk::get_compatible_depth_surface_format(m_device->get_formats_support(), m_depth_surface_info.depth_format);
-			m_texture_cache.set_memory_read_flags(m_depth_surface_info.address, m_depth_surface_info.pitch * m_depth_surface_info.height, rsx::memory_read_flags::flush_once);
-			m_texture_cache.flush_if_cache_miss_likely(old_format, m_depth_surface_info.address, m_depth_surface_info.pitch * m_depth_surface_info.height,
-				*m_current_command_buffer, m_swapchain->get_graphics_queue());
+			const rsx::address_range surface_range = m_depth_surface_info.get_memory_range();
+			m_texture_cache.set_memory_read_flags(surface_range, rsx::memory_read_flags::flush_once);
+			m_texture_cache.flush_if_cache_miss_likely(old_format, surface_range, *m_current_command_buffer, m_swapchain->get_graphics_queue());
 		}
 
 		m_depth_surface_info.address = m_depth_surface_info.pitch = 0;
@@ -2697,8 +2697,8 @@ void VKGSRender::prepare_rtts(rsx::framebuffer_creation_context context)
 		{
 			if (!m_surface_info[index].address || !m_surface_info[index].pitch) continue;
 
-			const u32 range = m_surface_info[index].pitch * m_surface_info[index].height * layout.aa_factors[1];
-			m_texture_cache.lock_memory_region(std::get<1>(m_rtts.m_bound_render_targets[index]), m_surface_info[index].address, range,
+			const rsx::address_range surface_range = m_surface_info[index].get_memory_range(layout.aa_factors[1]);
+			m_texture_cache.lock_memory_region(std::get<1>(m_rtts.m_bound_render_targets[index]), surface_range,
 				m_surface_info[index].width, m_surface_info[index].height, layout.actual_color_pitch[index], color_fmt_info.first, color_fmt_info.second);
 		}
 	}
@@ -2708,8 +2708,8 @@ void VKGSRender::prepare_rtts(rsx::framebuffer_creation_context context)
 		if (m_depth_surface_info.address && m_depth_surface_info.pitch)
 		{
 			const u32 gcm_format = (m_depth_surface_info.depth_format != rsx::surface_depth_format::z16)? CELL_GCM_TEXTURE_DEPTH16 : CELL_GCM_TEXTURE_DEPTH24_D8;
-			const u32 range = m_depth_surface_info.pitch * m_depth_surface_info.height * layout.aa_factors[1];
-			m_texture_cache.lock_memory_region(std::get<1>(m_rtts.m_bound_depth_stencil), m_depth_surface_info.address, range,
+			const rsx::address_range surface_range = m_depth_surface_info.get_memory_range(layout.aa_factors[1]);
+			m_texture_cache.lock_memory_region(std::get<1>(m_rtts.m_bound_depth_stencil), surface_range,
 				m_depth_surface_info.width, m_depth_surface_info.height, layout.actual_zeta_pitch, gcm_format, false);
 		}
 	}
