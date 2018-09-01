@@ -28,7 +28,7 @@ namespace vk
 
 		void reset(const rsx::address_range &memory_range)
 		{
-			if (memory_range.length() > get_section_base())
+			if (!m_first_reset && memory_range.length() > get_section_size())
 				release_dma_resources();
 
 			rsx::cached_texture_section::reset(memory_range);
@@ -58,7 +58,7 @@ namespace vk
 				this->rsx_pitch = get_section_size() / height;
 
 			//Even if we are managing the same vram section, we cannot guarantee contents are static
-			//The create method is only invoked when a new mangaged session is required
+			//The create method is only invoked when a new managed session is required
 			synchronized = false;
 			flushed = false;
 			sync_timestamp = 0ull;
@@ -425,7 +425,7 @@ namespace vk
 			for (auto &address_range : m_cache)
 			{
 				auto &range_data = address_range.second;
-				for (auto &tex : range_data.data)
+				for (auto &tex : range_data)
 				{
 					if (tex.exists())
 					{
@@ -438,7 +438,7 @@ namespace vk
 					tex.release_dma_resources();
 				}
 
-				range_data.data.clear();
+				range_data.clear();
 			}
 
 			m_discardable_storage.clear();
@@ -987,7 +987,7 @@ namespace vk
 			if (found->second.get_valid_count() == 0)
 				return false;
 
-			for (auto& tex : found->second.data)
+			for (auto& tex : found->second)
 			{
 				if (tex.is_dirty())
 					continue;

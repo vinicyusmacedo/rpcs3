@@ -255,10 +255,6 @@ namespace gl
 		{
 			rsx::cached_texture_section::reset(memory_range);
 
-			flushed = false;
-			synchronized = false;
-			sync_timestamp = 0ull;
-
 			vram_texture = nullptr;
 			managed_texture.reset();
 		}
@@ -1111,7 +1107,7 @@ namespace gl
 			if (found->second.get_valid_count() == 0)
 				return false;
 
-			for (auto& tex : found->second.data)
+			for (auto& tex : found->second)
 			{
 				if (tex.is_dirty())
 					continue;

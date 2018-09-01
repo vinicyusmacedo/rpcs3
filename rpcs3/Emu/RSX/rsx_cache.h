@@ -94,7 +94,11 @@ namespace rsx
 			verify(HERE), locked_range.is_page_range();
 		}
 
+	protected:
+		bool m_first_reset = true;
+
 	public:
+
 		buffered_section() {};
 		~buffered_section() {};
 
@@ -107,8 +111,11 @@ namespace rsx
 			confirmed_range = { 0, 0 };
 			protection = utils::protection::rw;
 			locked = false;
+			dirty = false;
 
 			init_lockable_range(cpu_range.start, cpu_range.length());
+
+			m_first_reset = false;
 		}
 
 		void protect(utils::protection prot, bool force = false)
@@ -316,14 +323,6 @@ namespace rsx
 			return protection;
 		}
 
-		std::pair<u32, u32> get_min_max(const std::pair<u32, u32>& current_min_max) const
-		{
-			u32 min = std::min(current_min_max.first, locked_range.start);
-			u32 max = std::max(current_min_max.second, locked_range.end);
-
-			return std::make_pair(min, max);
-		}
-
 		address_range get_min_max(const address_range& current_min_max) const
 		{
 			return locked_range.get_min_max(current_min_max);
@@ -415,8 +414,7 @@ namespace rsx
 				utils::protection page_protection = query_page_protection(addr);
 				if (page_protection != protection)
 				{
-					//__debugbreak();
-					fmt::throw_exception("Page protection mismatch (addr=0x%x, prot=0x%x vs 0x%x)", addr, static_cast<u32>(protection), static_cast<u32>(page_protection));
+					LOG_ERROR(RSX, "Page protection mismatch (addr=0x%x, prot=0x%x vs 0x%x)", addr, static_cast<u32>(protection), static_cast<u32>(page_protection));
 				}
 			}
 		}
