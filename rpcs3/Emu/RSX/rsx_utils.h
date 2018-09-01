@@ -289,12 +289,6 @@ namespace rsx
 			return range_overlaps(start, end, other.start, other.end);
 		}
 
-		inline bool overlaps(const u32 _start, const u32 _end) const
-		{
-			AUDIT(start < end);
-			return range_overlaps(start, end, _start, _end);
-		}
-
 		inline bool overlaps(const u32 addr) const
 		{
 			AUDIT(valid());
