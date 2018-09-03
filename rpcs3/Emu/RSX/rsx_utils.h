@@ -12,6 +12,8 @@
 #include <optional>
 #include <sstream>
 
+#define TEXTURE_CACHE_DEBUG
+
 extern "C"
 {
 #include <libavutil/pixfmt.h>
@@ -227,8 +229,9 @@ namespace rsx
 		return page_start(addr) == addr;
 	}
 
-	struct address_range
+	class address_range
 	{
+	public:
 		u32 start = UINT32_MAX; // First address in range
 		u32 end = 0; // Last address
 
@@ -437,10 +440,16 @@ namespace rsx
 		bool verify_protection(utils::protection prot) const
 		{
 			verify(HERE), is_page_range();
+
 			bool result = true;
 			for (u32 addr = start; addr < end; addr = addr + 4096u)
 			{
 				utils::protection page_protection = query_page_protection(addr);
+
+				// RO sections might be NA if they are overlapped by a NA section
+				if (prot == utils::protection::ro && page_protection == utils::protection::no)
+					continue;
+
 				if (page_protection != prot)
 				{
 					LOG_ERROR(RSX, "Page protection mismatch (addr=0x%x, prot=0x%x vs 0x%x)", addr, static_cast<u32>(prot), static_cast<u32>(page_protection));
@@ -456,6 +465,163 @@ namespace rsx
 	{
 		return address_range::create_start_end(page_start(addr), page_end(addr));
 	}
+
+	class address_range_vector
+	{
+	public:
+		typedef typename std::vector<address_range>  vector_type;
+		typedef typename vector_type::iterator       iterator;
+		typedef typename vector_type::const_iterator const_iterator;
+		typedef typename vector_type::size_type      size_type;
+
+	private:
+		vector_type data;
+
+	public:
+		// Wrapped functions
+		inline void reserve(size_t nr) { data.reserve(nr); }
+		inline void clear() { data.clear(); }
+		inline size_type size() const { return data.size(); }
+		inline bool empty() const { return data.empty(); }
+		inline address_range& operator[](size_type n) { return data[n]; }
+		inline const address_range& operator[](size_type n) const { return data[n]; }
+		inline iterator begin() { return data.begin(); }
+		inline const_iterator begin() const { return data.begin(); }
+		inline iterator end() { return data.end(); }
+		inline const_iterator end() const { return data.end(); }
+
+		// Search for ranges that touch new_range. If found, merge instead of adding new_range.
+		// When adding a new range, re-use invalid ranges whenever possible
+		//
+		// Note the case where we have
+		//   AAAA  BBBB
+		//      CCCC
+		// If we have data={A,B}, and new_range=C, we have to merge A with C, then B with A and invalidate B
+		void merge(const address_range &new_range)
+		{
+			if (!new_range.valid())
+				return;
+
+			address_range *found = nullptr;
+			address_range *invalid = nullptr;
+			
+			for (auto &existing : data)
+			{
+				if (!existing.valid())
+				{
+					invalid = &existing;
+					continue;
+				}
+
+				// range1 overlaps, is immediately before, or is immediately after range2
+				if (existing.touches(new_range))
+				{
+					if (found != nullptr)
+					{
+						// Already found a match, merge and invalidate "existing"
+						found->set_min_max(existing);
+						existing.invalidate();
+					}
+					else
+					{
+						// First match, merge "new_range"
+						existing.set_min_max(new_range);
+						found = &existing;
+					}
+				}
+			}
+
+			if (found != nullptr)
+				return;
+
+			if (invalid != nullptr)
+				*invalid = new_range;
+			else
+				data.push_back(new_range);
+		}
+
+		void merge(const address_range_vector &other)
+		{
+			for (const address_range &new_range : other)
+				merge(new_range);
+		}
+
+		// Exclude a given range from data
+		// Note the case where we have
+		//    AAAAAAA
+		//      EEE
+		// where data={A} and exclusion=E.
+		// In this case, we need to reduce A to the head (before E starts), and then create a new address_range B for the tail (after E ends), i.e.
+		//    AA   BB
+		//      EEE
+		void exclude(const address_range &exclusion)
+		{
+			if (!exclusion.valid())
+				return;
+
+			address_range *invalid = nullptr; // try to re-use an invalid range instead of calling push_back
+
+			// We use index access because we might have to push_back within the loop, which could invalidate the iterators
+			size_type _size = data.size();
+			for (int n = 0; n < _size; ++n)
+			{
+				address_range &existing = data[n];
+
+				// Null
+				if (!existing.valid())
+				{
+					invalid = &existing;
+					continue;
+				}
+
+				// No overlap, skip
+				if (!existing.overlaps(exclusion))
+					continue;
+
+				const bool head_excluded = exclusion.overlaps(existing.start); // This section has its start inside excluded range
+				const bool tail_excluded = exclusion.overlaps(existing.end); // This section has its end inside excluded range
+
+				// Cannot be salvaged, fully excluded
+				if (head_excluded && tail_excluded)
+				{
+					existing.invalidate();
+					invalid = &existing;
+				}
+				// Head overlaps, truncate head
+				else if (head_excluded)
+					existing.start = exclusion.next_address();
+				// Tail overlaps, truncate tail
+				else if (tail_excluded)
+					existing.end = exclusion.prev_address();
+				// Section sits in the middle (see comment above function header)
+				else
+				{
+					AUDIT( exclusion.inside(existing) );
+
+					// Tail
+					if (invalid != nullptr)
+					{
+						invalid->start = exclusion.next_address();
+						invalid->end = existing.end;
+						invalid = nullptr;
+					}
+					else
+					{
+						data.push_back(address_range::create_start_end(exclusion.next_address(), existing.end));
+					}
+
+					// Head
+					existing.end = exclusion.prev_address();
+				}
+			}
+		}
+
+		void exclude(const address_range_vector &other)
+		{
+			for (const address_range &exclusion : other)
+				exclude(exclusion);
+		}
+	};
 
 	// Acquire memory mirror with r/w permissions
 	weak_ptr get_super_ptr(address_range &range);
