@@ -921,135 +921,36 @@ namespace rsx
 		}
 
 		// Merges the protected ranges of the sections in "sections" into "result"
-		void merge_protected_ranges(std::vector<address_range> &result, const std::vector<section_storage_type*> &sections)
+		void merge_protected_ranges(address_range_vector &result, const std::vector<section_storage_type*> &sections)
 		{
 			result.reserve(result.size() + sections.size());
 
 			// Copy ranges to result, merging them if possible
 			for (const auto &section : sections)
 			{
-				auto &new_range = section->get_locked_range();
-				AUDIT(new_range.is_page_range());
+				const auto &new_range = section->get_locked_range();
+				AUDIT( new_range.is_page_range() );
 
-				// Search for ranges that touch new_range. If found, merge instead of adding new_range.
-				// Note the case where we have
-				//   AAAA  BBBB
-				//      CCCC
-				// If we have result={A,B}, and new_range=C, we have to merge A with C, then B with A and invalidate B
-				address_range *found = nullptr;
-				for (auto &existing : result)
-				{
-					if (!existing.valid())
-						continue;
-
-					// range1 overlaps, is immediately before, or is immediately after range2
-					if (existing.touches(new_range))
-					{
-						if (found != nullptr)
-						{
-							// Already found a match, merge and invalidate "existing"
-							found->set_min_max(existing);
-							existing.invalidate();
-						}
-						else
-						{
-							// First match, merge "new_range"
-							existing.set_min_max(new_range);
-							found = &existing;
-						}
-					}
-				}
-
-				// Add to list if we didn't find any range to merge with
-				if (found == nullptr)
-				{
-					result.push_back(new_range);
-				}
-			}
-
-#ifdef TEXTURE_CACHE_DEBUG
-			// naive check that there are no overlaps
-			for (const auto &range1 : result)
-			{
-				if (!range1.valid()) continue;
-				for (const auto &range2 : result)
-					verify(HERE), &range1 == &range2 || !range2.valid() || !range1.touches(range2);
-			}
-#endif // TEXTURE_CACHE_DEBUG
-		}
-
-		// Modifies "result" so that it contains no overlap with "sections_to_exclude"
-		void subtractive_intersect(std::vector<address_range> &result, const std::vector<section_storage_type*> &sections_to_exclude)
-		{
-			AUDIT( !result.empty() && !sections_to_exclude.empty() );
-
-			result.reserve(result.size() + sections_to_exclude.size());
-
-			// Subtract from the result the excluded regions
-			for (const auto &excluded : sections_to_exclude)
-			{
-				const auto exclusion_range = excluded->get_locked_range();
-
-				for (int n = 0; n < result.size(); ++n)
-				{
-					address_range &this_range = result[n];
-
-					if (!this_range.valid())
-					{
-						// Null
-						continue;
-					}
-
-					if (!this_range.overlaps(exclusion_range))
-					{
-						// No overlap, skip
-						continue;
-					}
-
-					const bool head_excluded = exclusion_range.overlaps(this_range.start); // This section has its start inside excluded range
-					const bool tail_excluded = exclusion_range.overlaps(this_range.end); // This section has its end inside excluded range
-
-					if (head_excluded && tail_excluded)
-					{
-						// Cannot be salvaged, fully excluded
-						this_range.invalidate();
-					}
-					else if (head_excluded)
-					{
-						// Head overlaps, truncate head
-						this_range.start = exclusion_range.next_address();
-					}
-					else if (tail_excluded)
-					{
-						// Tail overlaps, truncate tail
-						this_range.end = exclusion_range.prev_address();
-					}
-					else
-					{
-						verify(HERE), exclusion_range.inside(this_range);
-
-						// Section sits in the middle
-						result.push_back(address_range::create_start_end(exclusion_range.next_address(), this_range.end)); // Tail
-						this_range.end = exclusion_range.prev_address(); // Head
-					}
-				}
+				result.merge(new_range);
 			}
 		}
 
+		// NOTE: It is *very* important that data contains exclusions for *all* sections that overlap sections_to_unprotect/flush
+		//       Otherwise the page protections will end up incorrect and things will break!
 		void unprotect_set(thrashed_set& data)
 		{
-			auto unprotect_ranges = [this](std::vector<address_range>& _set)
+			auto protect_ranges = [this](address_range_vector& _set, utils::protection _prot)
 			{
 				u32 count = 0;
 				for (auto &range : _set)
 				{
 					if (range.valid())
 					{
-						range.protect(utils::protection::rw);
+						range.protect(_prot);
 						count++;
 					}
 				}
-				//LOG_ERROR(RSX, "Invalidated %d blocks", count);
+				//LOG_ERROR(RSX, "Set protection of %d blocks to 0x%x", count, static_cast<u32>(prot));
 			};
 
 			auto discard_set = [this](std::vector<section_storage_type*>& _set)
@@ -1065,46 +966,66 @@ namespace rsx
 			};
 
 
-			// Copy and merge ranges
-			std::vector<address_range> ranges_to_unprotect;
+			// Merge ranges to unprotect
+			address_range_vector ranges_to_unprotect;
+			address_range_vector ranges_to_reprotect_ro;
 			ranges_to_unprotect.reserve(data.sections_to_unprotect.size() + data.sections_to_flush.size() + data.sections_to_exclude.size());
 
 			merge_protected_ranges(ranges_to_unprotect, data.sections_to_unprotect);
 			merge_protected_ranges(ranges_to_unprotect, data.sections_to_flush);
 			AUDIT(!ranges_to_unprotect.empty());
 
-			// Apply exclusions
+			// Apply exclusions and collect ranges of excluded pages that need to be reprotected RO (i.e. only overlap RO regions)
 			if (!data.sections_to_exclude.empty())
 			{
-				subtractive_intersect(ranges_to_unprotect, data.sections_to_exclude);
-				// TODO: ruipin - collect ranges of excluded pages that need to be reprotected RO (i.e. only overlap RO regions)
+				ranges_to_reprotect_ro.reserve(data.sections_to_exclude.size());
+
+				u32 no_access_count = 0;
+				for (const auto &excluded : data.sections_to_exclude)
+				{
+					const auto &exclusion_range = excluded->get_locked_range();
+					AUDIT( exclusion_range.is_page_range() );
+
+					// Apply exclusion
+					ranges_to_unprotect.exclude(exclusion_range);
+
+					// Keep track of RO exclusions
+					utils::protection prot = excluded->get_protection();
+					if (prot == utils::protection::ro)
+						ranges_to_reprotect_ro.merge(exclusion_range);
+					else if (prot == utils::protection::no)
+						no_access_count++;
+					else
+						fmt::throw_exception("Unreachable" HERE);
+				}
+
+				// Exclude NA ranges from ranges_to_reprotect_ro
+				if (no_access_count > 0 && !ranges_to_reprotect_ro.empty())
+				{
+					for (auto &exclusion : data.sections_to_exclude)
+					{
+						if(exclusion->get_protection() != utils::protection::ro)
+							ranges_to_reprotect_ro.exclude(exclusion->get_locked_range());
+					}
+				}
 			}
 			AUDIT( !ranges_to_unprotect.empty() );
 
 			// Unprotect and discard
-			unprotect_ranges(ranges_to_unprotect);
 			discard_set(data.sections_to_unprotect);
 			discard_set(data.sections_to_flush);
+			protect_ranges(ranges_to_unprotect, utils::protection::rw);
+			protect_ranges(ranges_to_reprotect_ro, utils::protection::ro);
 
 #ifdef TEXTURE_CACHE_DEBUG
-			// naive check that there are no overlaps
-			for (const auto &range1 : ranges_to_unprotect)
-			{
-				if (!range1.valid()) continue;
-				for (const auto &range2 : ranges_to_unprotect)
-					verify(HERE), &range1 == &range2 || !range2.valid() || !range1.touches(range2);
-			}
-
 			// Check cache sanity
 			for (auto &cache_data : m_cache)
 			{
 				for (auto &tex : cache_data.second)
-				{
 					tex.verify_protection();
-				}
 			}
 
-			// Check that the fault_range is RW
+			// Check that the fault_range is RW (otherwise we could have deadlocks)
 			data.fault_range.verify_protection(utils::protection::rw);
 #endif // TEXTURE_CACHE_DEBUG
 		}
@@ -1487,6 +1408,7 @@ namespace rsx
 
 				for (auto &tex : range_data)
 				{
+					// TODO ruipin: Removed as a workaround for certain bugs
 					//if (tex.get_section_base() > test_range.start)
 					//	continue;
 
@@ -1662,6 +1584,7 @@ namespace rsx
 					if (surface->get_section_base() != rsx_range.start)
 						// HACK: preserve other overlapped sections despite overlap unless new section is superseding
 						// TODO: write memory to cell or redesign sections to preserve the data
+						// TODO ruipin: can this be done now?
 						continue;
 				}
 
@@ -1681,6 +1604,8 @@ namespace rsx
 						}
 					}
 
+					// TODO ruipin: is this safe? What about NA/RO regions overlapping this one?
+					// What about the small time period between this unprotect and the reprotect below?
 					surface->unprotect();
 				}
 			}
@@ -2180,6 +2105,7 @@ namespace rsx
 			auto overlapping = m_rtts.get_merged_texture_memory_region(texaddr, tex_width, tex_height, tex_pitch, bpp);
 			bool requires_merging = false;
 
+			// TODO ruipin: This fails. Bug?
 			//AUDIT( !overlapping.empty() );
 			if (overlapping.size() > 1)
 			{
@@ -2511,7 +2437,7 @@ namespace rsx
 
 				//Invalidate with writing=false, discard=false, rebuild=false, native_flush=true
 				//TODO ruipin: must change to writing=true to fix the texture at the same address being locked RO
-				invalidate_range_impl_base(tex_range, false, false, true, std::forward<Args>(extras)...);
+				invalidate_range_impl_base(tex_range, true /*false*/, false, true, std::forward<Args>(extras)...);
 
 				//NOTE: SRGB correction is to be handled in the fragment shader; upload as linear RGB
 				m_texture_memory_in_use += (tex_pitch * tex_height);
@@ -2884,6 +2810,8 @@ namespace rsx
 				m_unreleased_texture_objects++;
 
 				//Mark for removal as the memory is not reusable now
+				// TODO ruipin: Isn't this superfluous? There's already an invalidation below
+				// and this is dangerous since we might overlap sections that should not get invalidated
 				if (cached_dest->is_locked())
 				{
 					AUDIT( cached_dest->get_memory_read_flags() != memory_read_flags::flush_always );
