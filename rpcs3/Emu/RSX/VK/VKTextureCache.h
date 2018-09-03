@@ -301,23 +301,26 @@ namespace vk
 			verify(HERE), real_pitch > 0;
 			flushed = true;
 
-			const auto valid_range = get_confirmed_range();
-			verify(HERE), valid_range.second > 0;
-			void* pixels_src = dma_buffer->map(valid_range.first, valid_range.second);
-			void* pixels_dst = get_raw_ptr(valid_range.first, true);
+			const auto valid_range = get_confirmed_range_delta();
+			const u32 valid_offset = valid_range.first;
+			const u32 valid_length = valid_range.second;
+			verify(HERE), valid_length > 0;
 
-			if (real_pitch >= rsx_pitch || valid_range.second <= rsx_pitch)
+			void* pixels_src = dma_buffer->map(valid_offset, valid_length);
+			void* pixels_dst = get_ptr_by_offset(valid_offset, true);
+
+			if (real_pitch >= rsx_pitch || valid_length <= rsx_pitch)
 			{
-				memcpy(pixels_dst, pixels_src, valid_range.second);
+				memcpy(pixels_dst, pixels_src, valid_length);
 			}
 			else
 			{
-				if (valid_range.second % rsx_pitch)
+				if (valid_length % rsx_pitch)
 				{
 					fmt::throw_exception("Unreachable" HERE);
 				}
 
-				const u32 num_rows = valid_range.second / rsx_pitch;
+				const u32 num_rows = valid_length / rsx_pitch;
 				auto _src = (u8*)pixels_src;
 				auto _dst = (u8*)pixels_dst;
 
@@ -329,7 +332,7 @@ namespace vk
 				}
 			}
 
-			flush_io(valid_range.first, valid_range.second);
+			flush_ptr_by_offset(valid_offset, valid_length);
 			dma_buffer->unmap();
 			reset_write_statistics();
 
@@ -859,14 +862,14 @@ namespace vk
 			if (context != rsx::texture_upload_context::blit_engine_dst)
 			{
 				region.protect(utils::protection::ro);
-				read_only_range = region.get_min_max(read_only_range);
+				read_only_range = region.get_min_max(read_only_range, rsx::section_bounds::locked_range);
 			}
 			else
 			{
 				//TODO: Confirm byte swap patterns
 				//NOTE: Protection is handled by the caller
 				region.set_unpack_swap_bytes((aspect_flags & VK_IMAGE_ASPECT_COLOR_BIT) == VK_IMAGE_ASPECT_COLOR_BIT);
-				no_access_range = region.get_min_max(no_access_range);
+				no_access_range = region.get_min_max(no_access_range, rsx::section_bounds::locked_range);
 			}
 
 			update_cache_tag();
@@ -992,7 +995,7 @@ namespace vk
 				if (tex.is_dirty())
 					continue;
 
-				if (!tex.overlaps(rsx_address, rsx::overlap_test_bounds::full_range))
+				if (!tex.overlaps(rsx_address, rsx::section_bounds::full_range))
 					continue;
 
 				if ((rsx_address + rsx_size - tex.get_section_base()) <= tex.get_section_size())

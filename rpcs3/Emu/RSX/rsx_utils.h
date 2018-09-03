@@ -3,6 +3,8 @@
 #include "../System.h"
 #include "Utilities/geometry.h"
 #include "Utilities/asm.h"
+#include "Utilities/VirtualMemory.h"
+#include "Emu/Memory/vm.h"
 #include "gcm_enums.h"
 #include <atomic>
 #include <memory>
@@ -201,10 +203,10 @@ namespace rsx
 		}
 	};
 
-
 	/**
 	  * Addresses and Address Ranges
 	  */
+
 	constexpr inline u32 page_start(u32 addr)
 	{
 		return addr & ~4095u;
@@ -218,6 +220,11 @@ namespace rsx
 	constexpr inline u32 page_end(u32 addr)
 	{
 		return next_page(addr) - 1;
+	}
+
+	constexpr inline u32 is_page_aligned(u32 addr)
+	{
+		return page_start(addr) == addr;
 	}
 
 	struct address_range
@@ -243,6 +250,18 @@ namespace rsx
 		}
 
 		inline address_range(u32 _start, u32 _end) : start(_start), end(_end) {};
+
+#ifdef TEXTURE_CACHE_DEBUG
+		// 4GB memory space / 4096 bytes per page = 1048576 pages
+		static inline volatile u8 page_protection_information[1048576] = { 0 };
+
+		static inline utils::protection query_page_protection(u32 address)
+		{
+			verify(HERE), is_page_aligned(address);
+			utils::protection prot = static_cast<utils::protection>(page_protection_information[address / 4096u]);
+			return prot;
+		}
+#endif // TEXTURE_CACHE_DEBUG
 
 	public:
 		// Constructors
@@ -322,7 +341,7 @@ namespace rsx
 			return -((s32)(start - other.end - 1));
 		}
 
-		inline u32 abs_distance(const address_range &other) const
+		inline u32 absolute_distance(const address_range &other) const
 		{
 			if (touches(other))
 				return 0;
@@ -401,6 +420,36 @@ namespace rsx
 			ss << std::hex << '{' << start << "->" << end << '}';
 			return ss.str();
 		}
+
+		void protect(utils::protection prot)
+		{
+			verify(HERE), is_page_range();
+
+			//LOG_ERROR(RSX, "memory_protect(0x%x, 0x%x, %x)", static_cast<u32>(start), static_cast<u32>(length()), static_cast<u32>(prot));
+			utils::memory_protect(vm::base(start), length(), prot);
+
+#ifdef TEXTURE_CACHE_DEBUG
+			memset((void*)&page_protection_information[start / 4096u], static_cast<u8>(prot), length() / 4096u);
+#endif
+		}
+
+#ifdef TEXTURE_CACHE_DEBUG
+		bool verify_protection(utils::protection prot) const
+		{
+			verify(HERE), is_page_range();
+			bool result = true;
+			for (u32 addr = start; addr < end; addr = addr + 4096u)
+			{
+				utils::protection page_protection = query_page_protection(addr);
+				if (page_protection != prot)
+				{
+					LOG_ERROR(RSX, "Page protection mismatch (addr=0x%x, prot=0x%x vs 0x%x)", addr, static_cast<u32>(prot), static_cast<u32>(page_protection));
+					result = false;
+				}
+			}
+			return result;
+		}
+#endif // TEXTURE_CACHE_DEBUG
 	};
 
 	inline address_range page_for(u32 addr)
