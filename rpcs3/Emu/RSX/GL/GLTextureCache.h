@@ -482,12 +482,14 @@ namespace gl
 			m_fence.wait_for_signal();
 			flushed = true;
 
-			const auto valid_range = get_confirmed_range();
-			verify(HERE), valid_range.second > 0;
-			void *dst = get_raw_ptr(valid_range.first, true);
+			const auto valid_range = get_confirmed_range_delta();
+			const u32 valid_offset = valid_range.first;
+			const u32 valid_length = valid_range.second;
+			verify(HERE), valid_length > 0;
 
+			void *dst = get_ptr_by_offset(valid_range.first, true);
 			glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo_id);
-			void *src = glMapBufferRange(GL_PIXEL_PACK_BUFFER, valid_range.first, valid_range.second, GL_MAP_READ_BIT);
+			void *src = glMapBufferRange(GL_PIXEL_PACK_BUFFER, valid_offset, valid_length, GL_MAP_READ_BIT);
 
 			//throw if map failed since we'll segfault anyway
 			verify(HERE), src != nullptr;
@@ -499,20 +501,20 @@ namespace gl
 					require_manual_shuffle = true;
 			}
 
-			if (real_pitch >= rsx_pitch || valid_range.second <= rsx_pitch)
+			if (real_pitch >= rsx_pitch || valid_length <= rsx_pitch)
 			{
-				memcpy(dst, src, valid_range.second);
+				memcpy(dst, src, valid_length);
 			}
 			else
 			{
-				if (valid_range.second % rsx_pitch)
+				if (valid_length % rsx_pitch)
 				{
 					fmt::throw_exception("Unreachable" HERE);
 				}
 
 				u8 *_src = (u8*)src;
 				u8 *_dst = (u8*)dst;
-				const auto num_rows = valid_range.second / rsx_pitch;
+				const auto num_rows = valid_length / rsx_pitch;
 				for (u32 row = 0; row < num_rows; ++row)
 				{
 					memcpy(_dst, _src, real_pitch);
@@ -524,7 +526,7 @@ namespace gl
 			if (require_manual_shuffle)
 			{
 				//byte swapping does not work on byte types, use uint_8_8_8_8 for rgba8 instead to avoid penalty
-				rsx::shuffle_texel_data_wzyx<u8>(dst, rsx_pitch, width, valid_range.second / rsx_pitch);
+				rsx::shuffle_texel_data_wzyx<u8>(dst, rsx_pitch, width, valid_length / rsx_pitch);
 			}
 			else if (pack_unpack_swap_bytes && ::gl::get_driver_caps().vendor_AMD)
 			{
@@ -540,7 +542,7 @@ namespace gl
 				case texture::type::ushort_1_5_5_5_rev:
 				case texture::type::ushort_5_5_5_1:
 				{
-					const u32 num_reps = valid_range.second / 2;
+					const u32 num_reps = valid_length / 2;
 					be_t<u16>* in = (be_t<u16>*)(dst);
 					u16* out = (u16*)dst;
 
@@ -559,7 +561,7 @@ namespace gl
 				case texture::type::uint_2_10_10_10_rev:
 				case texture::type::uint_8_8_8_8:
 				{
-					u32 num_reps = valid_range.second / 4;
+					u32 num_reps = valid_length / 4;
 					be_t<u32>* in = (be_t<u32>*)(dst);
 					u32* out = (u32*)dst;
 
@@ -578,7 +580,7 @@ namespace gl
 				}
 			}
 
-			flush_io(valid_range.first, valid_range.second);
+			flush_ptr_by_offset(valid_offset, valid_length);
 			glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
 			glBindBuffer(GL_PIXEL_PACK_BUFFER, GL_NONE);
 
@@ -725,7 +727,7 @@ namespace gl
 			cached_texture_section& tex = find_cached_texture(tex_range, true, w, h, depth);
 			tex.reset(tex_range);
 			tex.create_read_only(image, w, h, depth, mipmaps);
-			read_only_range = tex.get_min_max(read_only_range);
+			read_only_range = tex.get_min_max(read_only_range, rsx::section_bounds::locked_range);
 			return tex;
 		}
 
@@ -998,7 +1000,7 @@ namespace gl
 				//NOTE: Protection is handled by the caller
 				cached.make_flushable();
 				cached.set_dimensions(width, height, depth, (rsx_range.length() / height));
-				no_access_range = cached.get_min_max(no_access_range);
+				no_access_range = cached.get_min_max(no_access_range, rsx::section_bounds::locked_range);
 			}
 
 			update_cache_tag();
@@ -1112,7 +1114,7 @@ namespace gl
 				if (tex.is_dirty())
 					continue;
 
-				if (!tex.overlaps(rsx_address, rsx::overlap_test_bounds::full_range))
+				if (!tex.overlaps(rsx_address, rsx::section_bounds::full_range))
 					continue;
 
 				if ((rsx_address + rsx_size - tex.get_section_base()) <= tex.get_section_size())
