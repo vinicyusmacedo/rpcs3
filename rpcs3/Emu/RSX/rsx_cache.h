@@ -10,7 +10,6 @@
 #include "rsx_utils.h"
 #include <thread>
 
-
 namespace rsx
 {
 	enum protection_policy
@@ -84,9 +83,6 @@ namespace rsx
 			verify(HERE), locked_range.is_page_range();
 		}
 
-	protected:
-		bool m_first_reset = true;
-
 	public:
 
 		buffered_section() {};
@@ -106,8 +102,6 @@ namespace rsx
 			dirty = false;
 
 			init_lockable_range(cpu_range);
-
-			m_first_reset = false;
 		}
 
 		void protect(utils::protection prot, bool force = false)
@@ -207,14 +201,14 @@ namespace rsx
 			return get_bounds(bounds).inside(other);
 		}
 
-		inline s32 distance(const address_range &other, section_bounds bounds) const
+		inline s32 signed_distance(const address_range &other, section_bounds bounds) const
 		{
-			return get_bounds(bounds).distance(other);
+			return get_bounds(bounds).signed_distance(other);
 		}
 
-		inline u32 absolute_distance(const address_range &other, section_bounds bounds) const
+		inline u32 distance(const address_range &other, section_bounds bounds) const
 		{
-			return get_bounds(bounds).absolute_distance(other);
+			return get_bounds(bounds).distance(other);
 		}
 
 		/**
@@ -242,7 +236,7 @@ namespace rsx
 
 		inline u32 get_section_size() const
 		{
-			return cpu_range.length();
+			return cpu_range.valid() ? cpu_range.length() : 0;
 		}
 
 		inline const address_range& get_locked_range() const
@@ -296,7 +290,6 @@ namespace rsx
 		}
 
 		// specialization due to sizeof(void) being illegal
-		template <>
 		inline void* get_ptr_by_offset(u32 offset, bool no_sync)
 		{
 			verify(HERE), super_ptr && cpu_range.length() >= (offset + 1);

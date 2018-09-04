@@ -485,7 +485,7 @@ namespace gl
 			const auto valid_range = get_confirmed_range_delta();
 			const u32 valid_offset = valid_range.first;
 			const u32 valid_length = valid_range.second;
-			verify(HERE), valid_length > 0;
+			AUDIT( valid_length > 0 );
 
 			void *dst = get_ptr_by_offset(valid_range.first, true);
 			glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo_id);
