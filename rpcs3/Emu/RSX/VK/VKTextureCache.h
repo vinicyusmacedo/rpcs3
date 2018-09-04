@@ -28,7 +28,7 @@ namespace vk
 
 		void reset(const rsx::address_range &memory_range)
 		{
-			if (!m_first_reset && memory_range.length() > get_section_size())
+			if (memory_range.length() > get_section_size())
 				release_dma_resources();
 
 			rsx::cached_texture_section::reset(memory_range);
@@ -304,7 +304,7 @@ namespace vk
 			const auto valid_range = get_confirmed_range_delta();
 			const u32 valid_offset = valid_range.first;
 			const u32 valid_length = valid_range.second;
-			verify(HERE), valid_length > 0;
+			AUDIT( valid_length > 0 );
 
 			void* pixels_src = dma_buffer->map(valid_offset, valid_length);
 			void* pixels_dst = get_ptr_by_offset(valid_offset, true);

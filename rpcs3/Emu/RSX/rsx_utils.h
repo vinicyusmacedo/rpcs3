@@ -10,9 +10,6 @@
 #include <memory>
 #include <bitset>
 #include <optional>
-#include <sstream>
-
-#define TEXTURE_CACHE_DEBUG
 
 extern "C"
 {
@@ -252,7 +249,7 @@ namespace rsx
 			return (start1 >= start2 && end1 <= end2);
 		}
 
-		inline address_range(u32 _start, u32 _end) : start(_start), end(_end) {};
+		address_range(u32 _start, u32 _end) : start(_start), end(_end) {};
 
 #ifdef TEXTURE_CACHE_DEBUG
 		// 4GB memory space / 4096 bytes per page = 1048576 pages
@@ -268,8 +265,8 @@ namespace rsx
 
 	public:
 		// Constructors
-		inline address_range() = default;
-		inline address_range(const address_range &other) : start(other.start), end(other.end) {};
+		address_range() = default;
+		address_range(const address_range &other) : start(other.start), end(other.end) {};
 
 		static inline address_range create_start_length(u32 _start, u32 _length)
 		{
@@ -330,7 +327,7 @@ namespace rsx
 			return overlaps(other) || other.start == next_address() || other.end == prev_address();
 		}
 
-		inline s32 distance(const address_range &other) const
+		inline s32 signed_distance(const address_range &other) const
 		{
 			if (touches(other))
 				return 0;
@@ -344,7 +341,7 @@ namespace rsx
 			return -((s32)(start - other.end - 1));
 		}
 
-		inline u32 absolute_distance(const address_range &other) const
+		inline u32 distance(const address_range &other) const
 		{
 			if (touches(other))
 				return 0;
@@ -419,9 +416,7 @@ namespace rsx
 		// Debug
 		inline std::string str() const
 		{
-			std::stringstream ss;
-			ss << std::hex << '{' << start << "->" << end << '}';
-			return ss.str();
+			return fmt::format("{0x%x->0x%x}", start, end);
 		}
 
 		void protect(utils::protection prot)
@@ -461,7 +456,7 @@ namespace rsx
 #endif // TEXTURE_CACHE_DEBUG
 	};
 
-	inline address_range page_for(u32 addr)
+	static inline address_range page_for(u32 addr)
 	{
 		return address_range::create_start_end(page_start(addr), page_end(addr));
 	}
@@ -469,10 +464,10 @@ namespace rsx
 	class address_range_vector
 	{
 	public:
-		typedef typename std::vector<address_range>  vector_type;
-		typedef typename vector_type::iterator       iterator;
-		typedef typename vector_type::const_iterator const_iterator;
-		typedef typename vector_type::size_type      size_type;
+		using vector_type    = typename std::vector<address_range>;
+		using iterator       = typename vector_type::iterator;
+		using const_iterator = typename vector_type::const_iterator;
+		using size_type      = typename vector_type::size_type;
 
 	private:
 		vector_type data;
