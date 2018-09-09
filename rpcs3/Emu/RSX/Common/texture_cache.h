@@ -5,7 +5,7 @@
 #include "TextureUtils.h"
 
 #include <atomic>
-#include <forward_list>
+#include <list>
 
 extern u64 get_system_time();
 
@@ -72,6 +72,153 @@ namespace rsx
 	 * Cached texture section and Ranged storage
 	 */
 
+	template <typename section_storage_type, size_t array_elements>
+	class ranged_storage_block_list
+	{
+		static_assert(array_elements > 0, "array_elements must be positive non-zero");
+
+	public:
+		using value_type = section_storage_type;
+		using array_type = typename std::array<value_type, array_elements>;
+		using list_type  = typename std::list<array_type>;
+		using size_type  = size_t;
+
+		// Iterator
+		template <typename T, typename block_list, typename list_iterator>
+		class iterator_tmpl
+		{
+		public:
+			// Traits
+			using value_type = T;
+			using pointer = T * ;
+			using difference_type = int;
+			using reference = T & ;
+			using iterator_category = std::forward_iterator_tag;
+
+			// Constructors
+			iterator_tmpl() = default;
+			iterator_tmpl(block_list *_block) :
+				block(_block),
+				list_it(_block->data.begin())
+			{
+				if (block->empty())
+					block = nullptr;
+			}
+
+		 private:
+			// Members
+			block_list *block;
+			list_iterator list_it = {};
+			size_type idx = 0;
+			size_type array_idx = 0;
+
+			inline void next()
+			{
+				AUDIT(block != nullptr);
+
+				idx++;
+				if (idx >= block->size())
+				{
+					block = nullptr;
+					return;
+				}
+
+				array_idx++;
+				if (array_idx >= array_elements)
+				{
+					array_idx = 0;
+					list_it++;
+				}
+			}
+
+		public:
+			inline reference operator*() const { return (*list_it)[array_idx]; }
+			inline pointer operator->() const { return &((*list_it)[array_idx]); }
+			inline reference operator++() { next(); return **this; }
+			inline reference operator++(int) { auto &res = **this;  next(); return res; }
+			inline bool operator==(const iterator_tmpl &rhs) const { return block == rhs.block && (block == nullptr || idx == rhs.idx); }
+			inline bool operator!=(const iterator_tmpl &rhs) const { return !operator==(rhs); }
+		};
+
+		using iterator = iterator_tmpl<value_type, ranged_storage_block_list, typename list_type::iterator>;
+		using const_iterator = iterator_tmpl<const value_type, const ranged_storage_block_list, typename list_type::const_iterator>;
+
+		// Members
+		size_type _size;
+		size_type _capacity;
+		list_type data;
+
+		// Helpers
+		inline size_type free_capacity() const
+		{
+			return _capacity - _size;
+		}
+
+		inline void add_capacity()
+		{
+			data.emplace_back();
+			_capacity += array_elements;
+		}
+
+	 public:
+		// Constructor, Destructor
+		ranged_storage_block_list() = default;
+
+		// Iterator
+		constexpr iterator begin() noexcept { return { this }; }
+		constexpr const_iterator begin() const noexcept { return { this }; }
+		constexpr iterator end() noexcept { return {}; }
+		constexpr const_iterator end() const noexcept { return {}; }
+
+		// Operators
+		inline value_type& front()
+		{
+			AUDIT(!empty());
+			return data.front()[0];
+		}
+
+		inline value_type& back()
+		{
+			AUDIT(!empty());
+			return data.back()[(_size-1) % array_elements];
+		}
+
+		// Other operations on data
+		inline size_type size() const { return _size; }
+		inline bool empty() const { return _size == 0; }
+
+		inline void clear()
+		{
+			_size = 0;
+		}
+
+		inline void free()
+		{
+			clear();
+			data.resize(0);
+			_capacity = 0;
+		}
+
+		inline void reserve(size_type new_size)
+		{
+			if (new_size == 0) return;
+			data.reserve((new_size-1 / array_elements) + 1);
+		}
+
+		template <typename ...Args>
+		inline value_type& emplace_back(Args&&... args)
+		{
+			if (free_capacity() == 0)
+				add_capacity();
+
+			AUDIT(!data.empty() && free_capacity() > 0);
+			value_type* dest = &(data.back()[_size % array_elements]);
+			new (dest) value_type(std::forward<Args>(args)...);
+			_size++;
+			return *dest;
+		}
+	};
+
 	template <typename section_storage_type>
 	class texture_cache_base
 	{
@@ -84,11 +231,11 @@ namespace rsx
 	class ranged_storage_block
 	{
 	public:
-		using ranged_storage_type  = typename _ranged_storage_type;
+		using ranged_storage_type  = _ranged_storage_type;
 		using section_storage_type = typename ranged_storage_type::section_storage_type;
 		using texture_cache_type   = typename ranged_storage_type::texture_cache_type;
 
-		using block_container_type = typename std::forward_list<section_storage_type>;//ranged_storage_block_list<section_storage_type, 10>;
+		using block_container_type = ranged_storage_block_list<section_storage_type, 32>;
 		using iterator             = typename block_container_type::iterator;
 		using const_iterator       = typename block_container_type::const_iterator;
 
@@ -108,7 +255,7 @@ namespace rsx
 				return _ptr;
 			}
 		};
-		using unowned_container_type = typename std::unordered_set<section_storage_type*>;
+		using unowned_container_type = std::unordered_set<section_storage_type*>;
 		using unowned_iterator       = typename unowned_container_type::iterator;
 		using unowned_const_iterator = typename unowned_container_type::const_iterator;
 
@@ -164,15 +311,15 @@ namespace rsx
 		/**
 		 * Wrappers
 		 */
-		constexpr iterator begin() { return sections.begin(); }
-		constexpr const_iterator begin() const { return sections.begin(); }
-		inline iterator end() { return sections.end(); }
-		inline const_iterator end() const { return sections.end(); }
+		constexpr iterator begin() noexcept { return sections.begin(); }
+		constexpr const_iterator begin() const noexcept { return sections.begin(); }
+		inline iterator end() noexcept { return sections.end(); }
+		inline const_iterator end() const noexcept { return sections.end(); }
 		inline iterator at(size_type pos) { return sections.data(pos); }
 		inline const_iterator at(size_type pos) const { return sections.data(pos); }
 		inline bool empty() const { return sections.empty(); }
 		inline size_type size() const { return sections.size(); }
-		inline int get_valid_count() const { return valid_count; }
+		inline unsigned int get_valid_count() const { return valid_count; }
 
 		/**
 		 * Utilities
@@ -190,8 +337,7 @@ namespace rsx
 
 		inline section_storage_type& create_section()
 		{
-			sections.emplace_front(*this);
-			return sections.front();
+			return sections.emplace_back(this);
 		}
 
 		inline void clear()
@@ -203,13 +349,6 @@ namespace rsx
 			}
 
 			sections.clear();
-			valid_count = 0;
-		}
-
-		inline void clear_everything() // also clears overlapping
-		{
-			sections.clear();
-			overlapping.clear();
 			valid_count = 0;
 		}
 
@@ -236,7 +375,7 @@ namespace rsx
 		}
 
 		// Address range
-		inline address_range& get_range() const { return range; }
+		inline const address_range& get_range() const { return range; }
 		inline u32 get_start() const { return range.start; }
 		inline u32 get_end() const { return range.end; }
 		inline u32 get_index() const { return index; }
@@ -320,17 +459,18 @@ namespace rsx
 		static constexpr u32 num_blocks = (u32)(0x1'0000'0000ull / block_size);
 		static_assert((num_blocks > 0) && ((u64)(num_blocks)* block_size == 0x1'0000'0000ull), "Invalid block_size/num_blocks");
 
-		using section_storage_type = typename _section_storage_type;
-		using texture_cache_type   = typename texture_cache_base<section_storage_type>;
-		using block_type           = typename ranged_storage_block<ranged_storage>;
+		using section_storage_type = _section_storage_type;
+		using texture_cache_type   = texture_cache_base<section_storage_type>;
+		using block_type           = ranged_storage_block<ranged_storage>;
 
 	private:
-		block_type blocks[num_blocks] = {};
-		texture_cache_type &m_tex_cache;
+		block_type blocks[num_blocks];
+		texture_cache_type *m_tex_cache;
 
 	public:
 		// Constructor
-		ranged_storage(texture_cache_type &tex_cache) : m_tex_cache(tex_cache)
+		ranged_storage(texture_cache_type *tex_cache) :
+			m_tex_cache(tex_cache)
 		{
 			// Initialize blocks
 			for (u32 i = 0; i < num_blocks; i++)
@@ -372,7 +512,8 @@ namespace rsx
 
 		inline texture_cache_type& get_texture_cache() const
 		{
-			return m_tex_cache;
+			AUDIT(m_tex_cache != nullptr);
+			return *m_tex_cache;
 		}
 
 		/**
@@ -398,12 +539,6 @@ namespace rsx
 			{
 				block = &storage.block_for(range.start);
 				unowned_remaining = true;
-
-				if (block->empty() && block->unowned_empty())
-				{
-					block = nullptr;
-					return;
-				}
 
 				// init iterators
 				unowned_it = block->unowned_begin();
@@ -535,8 +670,8 @@ namespace rsx
 			}
 		};
 
-		using range_iterator = range_iterator_tmpl<typename section_storage_type, typename block_type::unowned_iterator, typename block_type::iterator>;
-		using range_const_iterator = range_iterator_tmpl<typename const section_storage_type, typename block_type::unowned_const_iterator, typename block_type::const_iterator>;
+		using range_iterator = range_iterator_tmpl<section_storage_type, typename block_type::unowned_iterator, typename block_type::iterator>;
+		using range_const_iterator = range_iterator_tmpl<const section_storage_type, typename block_type::unowned_const_iterator, typename block_type::const_iterator>;
 
 		inline range_iterator range_begin(const address_range &range, section_bounds bounds) {
 			return range_iterator(*this, range, bounds);
@@ -577,13 +712,13 @@ namespace rsx
 	class cached_texture_section : public rsx::buffered_section
 	{
 	public:
-		using ranged_storage_type       = typename ranged_storage<derived_type>;
-		using ranged_storage_block_type = typename ranged_storage_block<ranged_storage_type>;
+		using ranged_storage_type       = ranged_storage<derived_type>;
+		using ranged_storage_block_type = ranged_storage_block<ranged_storage_type>;
 		using texture_cache_type        = typename ranged_storage_type::texture_cache_type;
 
 	private:
-		ranged_storage_block_type &m_block;
-		texture_cache_type &m_tex_cache;
+		ranged_storage_block_type *m_block;
+		texture_cache_type *m_tex_cache;
 
 		constexpr derived_type* derived()
 		{
@@ -617,7 +752,15 @@ namespace rsx
 	public:
 		u64 cache_tag = 0;
 
-		cached_texture_section(ranged_storage_block_type &block) : m_block(block), m_tex_cache(block.get_texture_cache()) {}
+		cached_texture_section() = default;
+		cached_texture_section(ranged_storage_block_type *block) : m_block(block), m_tex_cache(&block->get_texture_cache()) {}
+
+		inline void initialize(ranged_storage_block_type *block)
+		{
+			verify(HERE), m_block == nullptr && m_tex_cache == nullptr;
+			m_block = block;
+			m_tex_cache = &block->get_texture_cache();
+		}
 
 		/**
 		 * Comparison
@@ -661,15 +804,16 @@ namespace rsx
 		 */
 		void reset(const address_range &memory_range)
 		{
+			AUDIT(m_block != nullptr && m_tex_cache != nullptr);
 			AUDIT(memory_range.valid());
 
 			if (get_section_range().valid()) // texture was previously reset
 			{
-				m_block.pre_section_reset(*derived());
+				m_block->pre_section_reset(*derived());
 
 				// Reset texture_cache m_flush_always_cache
 				if (readback_behaviour == memory_read_flags::flush_always)
-					m_tex_cache.on_memory_read_flags_changed(*derived(), memory_read_flags::flush_once);
+					m_tex_cache->on_memory_read_flags_changed(*derived(), memory_read_flags::flush_once);
 			}
 
 			// Superclass
@@ -700,7 +844,7 @@ namespace rsx
 			image_type = rsx::texture_dimension_extended::texture_dimension_2d;
 
 			// Callback
-			m_block.post_section_reset(*derived());
+			m_block->post_section_reset(*derived());
 		}
 
 		/**
@@ -712,12 +856,12 @@ namespace rsx
 			if (old_prot != utils::protection::rw && prot == utils::protection::rw)
 			{
 				AUDIT( !is_locked() );
-				m_block.on_section_unprotected(*derived());
+				m_block->on_section_unprotected(*derived());
 			}
 			else if(old_prot == utils::protection::rw && prot != utils::protection::rw)
 			{
 				AUDIT(is_locked());
-				m_block.on_section_protected(*derived());
+				m_block->on_section_protected(*derived());
 			}
 		}
 
@@ -832,7 +976,7 @@ namespace rsx
 			readback_behaviour = flags;
 
 			if (notify_texture_cache && changed)
-				m_tex_cache.on_memory_read_flags_changed(*derived(), flags);
+				m_tex_cache->on_memory_read_flags_changed(*derived(), flags);
 		}
 
 		u16 get_width() const
@@ -1677,7 +1821,7 @@ namespace rsx
 
 	public:
 
-		texture_cache() : m_storage(*this) {}
+		texture_cache() : m_storage(this) {}
 		~texture_cache() {}
 
 		virtual void destroy() = 0;
@@ -2683,7 +2827,7 @@ namespace rsx
 
 				//Invalidate with writing=false, discard=false, rebuild=false, native_flush=true
 				//TODO ruipin: must change to writing=true to fix the texture at the same address being locked RO
-				invalidate_range_impl_base(tex_range, true /*false*/, false, true, std::forward<Args>(extras)...);
+				invalidate_range_impl_base(tex_range, false, false, true, std::forward<Args>(extras)...);
 
 				//NOTE: SRGB correction is to be handled in the fragment shader; upload as linear RGB
 				m_texture_memory_in_use += (tex_pitch * tex_height);

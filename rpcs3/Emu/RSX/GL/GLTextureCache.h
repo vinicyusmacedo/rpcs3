@@ -694,6 +694,7 @@ namespace gl
 	class texture_cache : public rsx::texture_cache<void*, gl::cached_texture_section, gl::texture*, gl::texture_view*, gl::texture, gl::texture::format>
 	{
 	private:
+		using superclass = rsx::texture_cache<void*, gl::cached_texture_section, gl::texture*, gl::texture_view*, gl::texture, gl::texture::format>;
 
 		struct discardable_storage
 		{
@@ -1081,9 +1082,7 @@ namespace gl
 
 	public:
 
-		texture_cache() {}
-
-		~texture_cache() {}
+		using superclass::texture_cache;
 
 		void initialize()
 		{
