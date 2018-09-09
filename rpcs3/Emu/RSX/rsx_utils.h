@@ -270,7 +270,7 @@ namespace rsx
 
 		static inline address_range create_start_length(u32 _start, u32 _length)
 		{
-			return address_range(_start, _start + _length - 1);
+			return address_range(_start, _start + (_length - 1));
 		}
 
 		static inline address_range create_start_end(u32 _start, u32 _end)

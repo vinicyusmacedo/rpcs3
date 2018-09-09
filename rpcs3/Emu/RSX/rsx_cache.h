@@ -31,7 +31,7 @@ namespace rsx
 	{
 	private:
 		address_range locked_range;
-		address_range cpu_range;
+		address_range cpu_range = {};
 		address_range confirmed_range;
 		weak_ptr super_ptr;
 
