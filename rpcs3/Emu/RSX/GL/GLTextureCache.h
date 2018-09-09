@@ -141,8 +141,10 @@ namespace gl
 		}
 	};
 
-	class cached_texture_section : public rsx::cached_texture_section
+	class cached_texture_section : public rsx::cached_texture_section<gl::cached_texture_section>
 	{
+		using superclass = rsx::cached_texture_section<gl::cached_texture_section>;
+
 	private:
 		fence m_fence;
 		u32 pbo_id = 0;
@@ -249,11 +251,11 @@ namespace gl
 		}
 
 	public:
-		using rsx::cached_texture_section::cached_texture_section;
+		using superclass::cached_texture_section;
 
 		void reset(const rsx::address_range &memory_range)
 		{
-			rsx::cached_texture_section::reset(memory_range);
+			superclass::reset(memory_range);
 
 			vram_texture = nullptr;
 			managed_texture.reset();
@@ -734,11 +736,8 @@ namespace gl
 
 		void clear()
 		{
-			for (auto &address_range : m_cache)
-			{
-				auto &range_data = address_range.second;
-				range_data.clear();
-			}
+			for (auto &block : m_storage)
+				block.clear();
 
 			clear_temporary_subresources();
 			m_unreleased_texture_objects = 0;
@@ -1103,14 +1102,12 @@ namespace gl
 		{
 			reader_lock lock(m_cache_mutex);
 
-			auto found = m_cache.find(get_block_address(rsx_address));
-			if (found == m_cache.end())
+			auto &block = m_storage.block_for(rsx_address);
+
+			if (block.get_valid_count() == 0)
 				return false;
 
-			if (found->second.get_valid_count() == 0)
-				return false;
-
-			for (auto& tex : found->second)
+			for (auto& tex : block)
 			{
 				if (tex.is_dirty())
 					continue;

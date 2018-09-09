@@ -79,34 +79,50 @@ namespace rsx
 		virtual void on_memory_read_flags_changed(const section_storage_type &section, rsx::memory_read_flags flags) = 0;
 	};
 
-	template <typename section_storage_type>
-	class ranged_storage_base
+
+	template <typename _ranged_storage_type>
+	class ranged_storage_block
 	{
 	public:
-		using texture_cache_type = texture_cache_base<section_storage_type>;
+		using ranged_storage_type  = typename _ranged_storage_type;
+		using section_storage_type = typename ranged_storage_type::section_storage_type;
+		using texture_cache_type   = typename ranged_storage_type::texture_cache_type;
+
+		using block_container_type = typename std::forward_list<section_storage_type>;//ranged_storage_block_list<section_storage_type, 10>;
+		using iterator             = typename block_container_type::iterator;
+		using const_iterator       = typename block_container_type::const_iterator;
+
+		using size_type = typename block_container_type::size_type;
+
+		static constexpr u32 num_blocks = ranged_storage_type::num_blocks;
+		static constexpr u32 block_size = ranged_storage_type::block_size;
+
+		struct SectionPtrHash
+		{
+			inline size_t operator()(const section_storage_type* ptr) const
+			{
+				auto _ptr = reinterpret_cast<uintptr_t>(ptr);
+#if SIZE_MAX < UINTPTR_MAX
+				_ptr %= SIZE_MAX;
+#endif
+				return _ptr;
+			}
+		};
+		using unowned_container_type = typename std::unordered_set<section_storage_type*>;
+		using unowned_iterator       = typename unowned_container_type::iterator;
+		using unowned_const_iterator = typename unowned_container_type::const_iterator;
 
 	private:
-		texture_cache_type &m_tex_cache;
-		std::atomic_int valid_count = { 0 };  //Number of usable (non-dirty) blocks
-		u32 max_range = 0;  //Largest stored block
-		u32 max_addr = 0;
-		u32 min_addr = UINT32_MAX;
+		u32 index = 0;
+		address_range range = {};
+		block_container_type sections = {};
+		unowned_container_type unowned; // pointers to sections from other blocks that overlap this block
+		std::atomic_uint valid_count = { 0 };
+		ranged_storage_type *m_storage = nullptr;
 
 		inline void notify()
 		{
-			verify(HERE), valid_count >= 0;
 			valid_count++;
-		}
-
-		void update_ranges(const address_range &range)
-		{
-			verify(HERE), range.valid();
-
-			const address_range page_range = range.to_page_range();
-
-			max_range = std::max(max_range, page_range.length());
-			max_addr = std::max(max_addr, range.start);
-			min_addr = std::min(min_addr, page_range.start);
 		}
 
 		inline void remove_one()
@@ -115,13 +131,117 @@ namespace rsx
 			valid_count--;
 		}
 
-	public:
-		ranged_storage_base(texture_cache_type &tex_cache) : m_tex_cache(tex_cache) {}
-
-		inline texture_cache_type& get_tex_cache() const
+		inline void add_owned_section_overlaps(section_storage_type &section)
 		{
-			return m_tex_cache;
+			u32 end = section.get_section_range().end;
+			for (auto *block = next_block(); block != nullptr && end >= block->get_start(); block = block->next_block())
+				block->add_unowned_section(section);
 		}
+
+		inline void remove_owned_section_overlaps(section_storage_type &section)
+		{
+			u32 end = section.get_section_range().end;
+			for (auto *block = next_block(); block != nullptr && end >= block->get_start(); block = block->next_block())
+				block->remove_unowned_section(section);
+		}
+
+	public:
+		// Construction
+		ranged_storage_block() = default;
+
+		void initialize(u32 _index, ranged_storage_type *storage)
+		{
+			verify(HERE), m_storage == nullptr && storage != nullptr;
+			AUDIT(index < num_blocks);
+
+			m_storage = storage;
+			index = _index;
+			range = address_range::create_start_length(index * block_size, block_size);
+
+			AUDIT(range.is_page_range() && get_start() / block_size == index);
+		}
+
+		/**
+		 * Wrappers
+		 */
+		constexpr iterator begin() { return sections.begin(); }
+		constexpr const_iterator begin() const { return sections.begin(); }
+		inline iterator end() { return sections.end(); }
+		inline const_iterator end() const { return sections.end(); }
+		inline iterator at(size_type pos) { return sections.data(pos); }
+		inline const_iterator at(size_type pos) const { return sections.data(pos); }
+		inline bool empty() const { return sections.empty(); }
+		inline size_type size() const { return sections.size(); }
+		inline int get_valid_count() const { return valid_count; }
+
+		/**
+		 * Utilities
+		 */
+		ranged_storage_type& get_storage() const
+		{
+			AUDIT(m_storage != nullptr);
+			return *m_storage;
+		}
+
+		texture_cache_type& get_texture_cache() const
+		{
+			return get_storage().get_texture_cache();
+		}
+
+		inline section_storage_type& create_section()
+		{
+			sections.emplace_front(*this);
+			return sections.front();
+		}
+
+		inline void clear()
+		{
+			for (auto &section : *this)
+			{
+				if(section.get_section_range().valid())
+					remove_owned_section_overlaps(section);
+			}
+
+			sections.clear();
+			valid_count = 0;
+		}
+
+		inline void clear_everything() // also clears overlapping
+		{
+			sections.clear();
+			overlapping.clear();
+			valid_count = 0;
+		}
+
+		inline bool is_first_block() const
+		{
+			return index == 0;
+		}
+
+		inline bool is_last_block() const
+		{
+			return index == num_blocks - 1;
+		}
+
+		inline ranged_storage_block* prev_block() const
+		{
+			if (is_first_block()) return nullptr;
+			return &get_storage()[index-1];
+		}
+
+		inline ranged_storage_block* next_block() const
+		{
+			if (is_last_block()) return nullptr;
+			return &get_storage()[index+1];
+		}
+
+		// Address range
+		inline address_range& get_range() const { return range; }
+		inline u32 get_start() const { return range.start; }
+		inline u32 get_end() const { return range.end; }
+		inline u32 get_index() const { return index; }
+		inline bool overlaps(const section_storage_type& section, section_bounds bounds = full_range) const { return section.overlaps(range, bounds); }
+		inline bool overlaps(const address_range& _range) const { return range.overlaps(_range); }
 
 		/**
 		 * Section callbacks
@@ -136,41 +256,339 @@ namespace rsx
 			remove_one();
 		}
 
-		inline void post_section_reset(const section_storage_type &section)
+		inline void pre_section_reset(section_storage_type &section)
 		{
-			update_ranges(section.get_section_range());
+			AUDIT(range.overlaps(section.get_section_range().start));
+			remove_owned_section_overlaps(section);
 		}
+
+		inline void post_section_reset(section_storage_type &section)
+		{
+			AUDIT(range.overlaps(section.get_section_range().start));
+			add_owned_section_overlaps(section);
+		}
+
+		/**
+		 * Overlapping sections
+		 */
+		inline bool contains_unowned(section_storage_type &section) const
+		{
+			return (unowned.find(&section) != unowned.end());
+		}
+
+		inline void add_unowned_section(section_storage_type &section)
+		{
+			AUDIT(overlaps(section));
+			AUDIT(section.get_section_base() < range.start);
+			AUDIT(!contains_unowned(section));
+			unowned.insert(&section);
+		}
+
+		inline void remove_unowned_section(section_storage_type &section)
+		{
+			AUDIT(overlaps(section));
+			AUDIT(section.get_section_base() < range.start);
+			AUDIT(contains_unowned(section));
+			unowned.erase(&section);
+		}
+
+		inline unowned_iterator unowned_begin() { return unowned.begin(); }
+		inline unowned_const_iterator unowned_begin() const { return unowned.begin(); }
+		inline unowned_iterator unowned_end() { return unowned.end(); }
+		inline unowned_const_iterator unowned_end() const { return unowned.end(); }
+		inline bool unowned_empty() const {	return unowned.empty();	}
+
+		/**
+		 * Debug
+		 */
+#ifdef TEXTURE_CACHE_DEBUG
+		void verify_protection() const
+		{
+			for (auto &section : *this)
+				section.verify_protection();
+		}
+#endif //TEXTURE_CACHE_DEBUG
+	};
+
+
+	template <typename _section_storage_type>
+	class ranged_storage
+	{
+	public:
+		static constexpr u32 block_size = 0x100'0000;
+		static_assert(block_size % 4096u == 0, "block_size must be a multiple of the page size");
+		static constexpr u32 num_blocks = (u32)(0x1'0000'0000ull / block_size);
+		static_assert((num_blocks > 0) && ((u64)(num_blocks)* block_size == 0x1'0000'0000ull), "Invalid block_size/num_blocks");
+
+		using section_storage_type = typename _section_storage_type;
+		using texture_cache_type   = typename texture_cache_base<section_storage_type>;
+		using block_type           = typename ranged_storage_block<ranged_storage>;
+
+	private:
+		block_type blocks[num_blocks] = {};
+		texture_cache_type &m_tex_cache;
+
+	public:
+		// Constructor
+		ranged_storage(texture_cache_type &tex_cache) : m_tex_cache(tex_cache)
+		{
+			// Initialize blocks
+			for (u32 i = 0; i < num_blocks; i++)
+				blocks[i].initialize(i, this);
+		}
+
+		/**
+		 * Wrappers
+		 */
+		constexpr auto begin() { return std::begin(blocks); }
+		constexpr auto begin() const { return std::begin(blocks); }
+		constexpr auto end() { return std::end(blocks); }
+		constexpr auto end() const { return std::end(blocks); }
 
 		/**
 		 * Utilities
 		 */
-		inline bool overlaps(const address_range &range) const
+		inline block_type& block_for(u32 address)
 		{
-			return range.overlaps(address_range::create_start_end(min_addr, max_addr + max_range - 1));
+			return blocks[address / block_size];
 		}
 
-		inline int get_valid_count() const
+		inline block_type& block_for(const address_range &range)
 		{
-			return valid_count;
+			AUDIT(range.valid());
+			return block_for(range.start);
 		}
 
-		inline void clear()
+		inline block_type& block_for(const section_storage_type &section)
 		{
-			u32 max_range = 0;  //Largest stored block
-			u32 max_addr = 0;
-			u32 min_addr = UINT32_MAX;
+			return block_for(section.get_section_base());
 		}
+
+		inline block_type& operator[](size_t pos)
+		{
+			AUDIT(pos < num_blocks);
+			return blocks[pos];
+		}
+
+		inline texture_cache_type& get_texture_cache() const
+		{
+			return m_tex_cache;
+		}
+
+		/**
+		 * Ranged Iterator
+		 */
+		// Iterator
+		template <typename T, typename unowned_iterator, typename section_iterator>
+		class range_iterator_tmpl
+		{
+		public:
+			// Traits
+			using value_type = T;
+			using pointer = T*;
+			using difference_type = int;
+			using reference = T&;
+			using iterator_category = std::forward_iterator_tag;
+
+			// Constructors
+			range_iterator_tmpl() = default; // end iterator
+			explicit range_iterator_tmpl(ranged_storage &storage, const address_range &_range, section_bounds _bounds) :
+				range(_range),
+				bounds(_bounds)
+			{
+				block = &storage.block_for(range.start);
+				unowned_remaining = true;
+
+				if (block->empty() && block->unowned_empty())
+				{
+					block = nullptr;
+					return;
+				}
+
+				// init iterators
+				unowned_it = block->unowned_begin();
+				cur_block_it = block->begin();
+
+				// do a "fake" iteration to ensure the internal state is consistent
+				next(false);
+			}
+
+		private:
+			// Members
+			address_range range;
+			section_bounds bounds;
+
+			block_type *block;
+			bool unowned_remaining = true;
+			unowned_iterator unowned_it = {};
+			section_iterator cur_block_it = {};
+
+			inline void next(bool iterate = true)
+			{
+				AUDIT(block != nullptr);
+
+				do
+				{
+					// Still have "unowned" sections from blocks before the range to loop through
+					if (unowned_remaining)
+					{
+						auto blk_end = block->unowned_end();
+						if(iterate && unowned_it != blk_end)
+							unowned_it++;
+
+						if (unowned_it != blk_end)
+						{
+							iterate = true; // we must allow iterations in further loops or we'll get a deadlock
+							AUDIT(is_valid());
+							continue;
+						}
+
+						// no more unowned sections remaining
+						unowned_remaining = false;
+
+						// We need to check whether the first cur_block_it is within the range we want
+						iterate = false;
+					}
+
+					// Iterate current block
+					auto blk_end = block->end();
+					if (iterate && cur_block_it != blk_end)
+						cur_block_it++;
+
+					if (cur_block_it == blk_end)
+					{
+						// Go to next block
+						block = block->next_block();
+
+						if (block == nullptr || block->get_start() > range.end) // Reached end
+						{
+							block = nullptr;
+							break;
+						}
+
+						cur_block_it = block->begin();
+					}
+
+					iterate = true; // we must allow iterations in further loops or we'll get a deadlock
+					AUDIT(is_valid() || cur_block_it == block->end());
+				}
+				while (cur_block_it == block->end() || !((*this)->overlaps(range, bounds)));
+
+				AUDIT(block == nullptr || (*this)->get_section_range().valid());
+			}
+
+			inline bool is_valid() const
+			{
+				return block != nullptr && (
+					( unowned_remaining && unowned_it   != block->unowned_end()) ||
+					(!unowned_remaining && cur_block_it != block->end())
+				);
+			}
+
+		public:
+			inline reference operator*() const {
+				AUDIT(block != nullptr);
+				if (unowned_remaining)
+					return **unowned_it;
+				else
+					return *cur_block_it;
+			}
+
+			inline pointer operator->() const {
+				AUDIT(block != nullptr);
+				if (unowned_remaining)
+					return *unowned_it;
+				else
+					return &(*cur_block_it);
+			}
+
+			inline reference operator++() { next(); return **this; }
+			inline reference operator++(int) { auto ptr = &(**this); next(); return *ptr; }
+			inline bool operator==(const range_iterator_tmpl &rhs) const
+			{
+				return block == rhs.block && (
+						block == nullptr ||
+						( unowned_remaining && rhs.unowned_remaining && unowned_it == rhs.unowned_it) ||
+						(!unowned_remaining && cur_block_it == rhs.cur_block_it)
+					);
+			}
+			inline bool operator!=(const range_iterator_tmpl &rhs) const { return !operator==(rhs); }
+
+			inline void set_end(u32 new_end)
+			{
+				range.end = new_end;
+
+				// If we've exceeded the new end, invalidate iterator
+				if (block->get_start() > range.end)
+					block = nullptr;
+			}
+
+			inline block_type& get_block() const
+			{
+				AUDIT(block != nullptr);
+				return *block;
+			}
+
+			inline section_bounds get_bounds() const
+			{
+				return bounds;
+			}
+		};
+
+		using range_iterator = range_iterator_tmpl<typename section_storage_type, typename block_type::unowned_iterator, typename block_type::iterator>;
+		using range_const_iterator = range_iterator_tmpl<typename const section_storage_type, typename block_type::unowned_const_iterator, typename block_type::const_iterator>;
+
+		inline range_iterator range_begin(const address_range &range, section_bounds bounds) {
+			return range_iterator(*this, range, bounds);
+		}
+
+		inline range_const_iterator range_begin(const address_range &range, section_bounds bounds) const {
+			return range_const_iterator(*this, range, bounds);
+		}
+
+		inline range_const_iterator range_begin(u32 address, section_bounds bounds) const {
+			return range_const_iterator(*this, address_range::create_start_length(address,1), bounds);
+		}
+
+		constexpr range_iterator range_end()
+		{
+			return range_iterator();
+		}
+
+		constexpr range_const_iterator range_end() const
+		{
+			return range_const_iterator();
+		}
+
+		/**
+         * Debug
+         */
+#ifdef TEXTURE_CACHE_DEBUG
+		void verify_protection() const
+		{
+			for (auto &block : *this)
+				block.verify_protection();
+		}
+#endif //TEXTURE_CACHE_DEBUG
 	};
 
+
+	template <typename derived_type>
 	class cached_texture_section : public rsx::buffered_section
 	{
 	public:
-		using ranged_storage_type = ranged_storage_base<cached_texture_section>;
-		using texture_cache_type = ranged_storage_type::texture_cache_type;
+		using ranged_storage_type       = typename ranged_storage<derived_type>;
+		using ranged_storage_block_type = typename ranged_storage_block<ranged_storage_type>;
+		using texture_cache_type        = typename ranged_storage_type::texture_cache_type;
 
 	private:
-		ranged_storage_type &m_storage;
+		ranged_storage_block_type &m_block;
 		texture_cache_type &m_tex_cache;
+
+		constexpr derived_type* derived()
+		{
+			return static_cast<derived_type*>(this);
+		}
 
 	protected:
 		u16 width;
@@ -199,7 +617,7 @@ namespace rsx
 	public:
 		u64 cache_tag = 0;
 
-		cached_texture_section(ranged_storage_type &storage) : m_storage(storage), m_tex_cache(storage.get_tex_cache()) {}
+		cached_texture_section(ranged_storage_block_type &block) : m_block(block), m_tex_cache(block.get_texture_cache()) {}
 
 		/**
 		 * Comparison
@@ -209,29 +627,32 @@ namespace rsx
 			return rsx::buffered_section::matches(memory_range);
 		}
 
-		bool matches(u32 rsx_address, u32 width, u32 height, u32 depth, u32 mipmaps)
+		inline bool matches_dimensions(u32 width, u32 height, u32 depth, u32 mipmaps)
 		{
-			if (rsx_address == get_section_base())
-			{
-				if (!width && !height && !depth && !mipmaps)
-					return true;
-
-				if (width && width != this->width)
-					return false;
-
-				if (height && height != this->height)
-					return false;
-
-				if (depth && depth != this->depth)
-					return false;
-
-				if (mipmaps && mipmaps > this->mipmaps)
-					return false;
-
+			if (!width && !height && !depth && !mipmaps)
 				return true;
-			}
 
-			return false;
+			if (width && width != this->width)
+				return false;
+
+			if (height && height != this->height)
+				return false;
+
+			if (depth && depth != this->depth)
+				return false;
+
+			if (mipmaps && mipmaps > this->mipmaps)
+				return false;
+
+			return true;
+		}
+
+		inline bool matches(u32 rsx_address, u32 width, u32 height, u32 depth, u32 mipmaps)
+		{
+			if (rsx_address != get_section_base())
+				return false;
+
+			return matches_dimensions(width, height, depth, mipmaps);
 		}
 
 
@@ -240,9 +661,16 @@ namespace rsx
 		 */
 		void reset(const address_range &memory_range)
 		{
-			// Reset texture_cache m_flush_always_cache
-			if(readback_behaviour == memory_read_flags::flush_always)
-				m_tex_cache.on_memory_read_flags_changed(*this, memory_read_flags::flush_once);
+			AUDIT(memory_range.valid());
+
+			if (get_section_range().valid()) // texture was previously reset
+			{
+				m_block.pre_section_reset(*derived());
+
+				// Reset texture_cache m_flush_always_cache
+				if (readback_behaviour == memory_read_flags::flush_always)
+					m_tex_cache.on_memory_read_flags_changed(*derived(), memory_read_flags::flush_once);
+			}
 
 			// Superclass
 			rsx::buffered_section::reset(memory_range);
@@ -272,7 +700,7 @@ namespace rsx
 			image_type = rsx::texture_dimension_extended::texture_dimension_2d;
 
 			// Callback
-			m_storage.post_section_reset(*this);
+			m_block.post_section_reset(*derived());
 		}
 
 		/**
@@ -284,12 +712,12 @@ namespace rsx
 			if (old_prot != utils::protection::rw && prot == utils::protection::rw)
 			{
 				AUDIT( !is_locked() );
-				m_storage.on_section_unprotected(*this);
+				m_block.on_section_unprotected(*derived());
 			}
 			else if(old_prot == utils::protection::rw && prot != utils::protection::rw)
 			{
 				AUDIT(is_locked());
-				m_storage.on_section_protected(*this);
+				m_block.on_section_protected(*derived());
 			}
 		}
 
@@ -404,7 +832,7 @@ namespace rsx
 			readback_behaviour = flags;
 
 			if (notify_texture_cache && changed)
-				m_tex_cache.on_memory_read_flags_changed(*this, flags);
+				m_tex_cache.on_memory_read_flags_changed(*derived(), flags);
 		}
 
 		u16 get_width() const
@@ -507,58 +935,21 @@ namespace rsx
 		}
 	};
 
+
 	template <typename commandbuffer_type, typename section_storage_type, typename image_resource_type, typename image_view_type, typename image_storage_type, typename texture_format>
-	class texture_cache : public rsx::texture_cache_base<rsx::cached_texture_section>
+	class texture_cache : public rsx::texture_cache_base<section_storage_type>
 	{
-		static_assert(std::is_base_of<rsx::cached_texture_section, section_storage_type>::value, "section_storage_type must derive from rsx::cached_texture_section");
+		static_assert(std::is_base_of<rsx::cached_texture_section<section_storage_type>, section_storage_type>::value, "section_storage_type must derive from rsx::cached_texture_section");
+
+	public:
+		using superclass           = typename rsx::texture_cache_base<section_storage_type>;
+		using ranged_storage       = typename rsx::ranged_storage<section_storage_type>;
+		using ranged_storage_block = typename ranged_storage::block_type;
 
 	private:
 		/**
 		 * Helper structs/enums
 		 */
-		class ranged_storage : public rsx::ranged_storage_base<rsx::cached_texture_section>
-		{
-		public:
-			using data_type      = typename std::forward_list<section_storage_type>;
-			using iterator       = typename data_type::iterator;
-			using const_iterator = typename data_type::const_iterator;
-
-		private:
-			using super = rsx::ranged_storage_base<rsx::cached_texture_section>;
-			data_type data;  //Stored data
-
-		public:
-			using super::ranged_storage_base;
-
-			/**
-			 * Iterator wrappers
-			 */
-			inline iterator begin() { return data.begin(); }
-			inline const_iterator begin() const { return data.begin(); }
-			inline iterator end() { return data.end(); }
-			inline const_iterator end() const { return data.end(); }
-
-			/**
-			 * Utilities
-			 */
-			inline section_storage_type& create_section()
-			{
-				data.emplace_front(*this);
-				auto &section = data.front();
-				return section;
-			}
-
-			inline void clear()
-			{
-				for (auto &tex : data)
-				{
-					tex.destroy();
-				}
-
-				data.clear();
-				super::clear();
-			}
-		};
 
 		// Keep track of cache misses to pre-emptively flush some addresses
 		struct framebuffer_memory_characteristics
@@ -583,7 +974,7 @@ namespace rsx
 
 		struct intersecting_set
 		{
-			std::vector<std::pair<section_storage_type*, ranged_storage*>> sections;
+			std::vector<section_storage_type*> sections;
 			address_range invalidate_range;
 		};
 
@@ -701,7 +1092,7 @@ namespace rsx
 		 */
 
 		shared_mutex m_cache_mutex;
-		std::unordered_map<u32, ranged_storage> m_cache;
+		ranged_storage m_storage;
 		std::unordered_multimap<u32, std::pair<deferred_subresource, image_view_type>> m_temporary_subresource_cache;
 
 		std::atomic<u64> m_cache_update_tag = {0};
@@ -763,19 +1154,6 @@ namespace rsx
 		/**
 		 * Helpers
 		 */
-		inline constexpr u32 get_block_size() const { return 0x1000000; }
-		inline constexpr u32 get_block_address(u32 address) const { return address & ~(get_block_size()-1); }
-
-		inline ranged_storage& range_data_for(u32 address)
-		{
-			return m_cache.try_emplace(get_block_address(address), *this).first->second;
-		}
-
-		inline ranged_storage& range_data_for(const section_storage_type &section)
-		{
-			return range_data_for(section.get_section_base());
-		}
-
 		inline void update_cache_tag()
 		{
 			m_cache_update_tag++;
@@ -809,32 +1187,6 @@ namespace rsx
 		/**
 		 * Internal implementation methods and helpers
 		 */
-
-		std::pair<utils::protection, section_storage_type*> get_memory_protection(u32 address)
-		{
-			auto found = m_cache.find(get_block_address(address));
-			if (found != m_cache.end())
-			{
-				for (auto &tex : found->second.data)
-				{
-					if (tex.is_locked() && tex.overlaps(address, rsx::section_bounds::locked_range))
-						return{ tex.get_protection(), &tex };
-				}
-			}
-
-			//Get the preceding block and check if any hits are found
-			found = m_cache.find(get_block_address(address) - get_block_size());
-			if (found != m_cache.end())
-			{
-				for (auto &tex : found->second.data)
-				{
-					if (tex.is_locked() && tex.overlaps(address, rsx::section_bounds::locked_range))
-						return{ tex.get_protection(), &tex };
-				}
-			}
-
-			return{ utils::protection::rw, nullptr };
-		}
 
 		inline bool region_intersects_cache(const address_range &test_range, bool is_writing) const
 		{
@@ -957,11 +1309,7 @@ namespace rsx
 
 #ifdef TEXTURE_CACHE_DEBUG
 			// Check cache sanity
-			for (auto &cache_data : m_cache)
-			{
-				for (auto &tex : cache_data.second)
-					tex.verify_protection();
-			}
+			m_storage.verify_protection();
 
 			// Check that the fault_range is RW (otherwise we could have deadlocks)
 			data.fault_range.verify_protection(utils::protection::rw);
@@ -998,93 +1346,93 @@ namespace rsx
 			u32 last_dirty_block = UINT32_MAX;
 			bool repeat_loop = false;
 
-			auto It = m_cache.begin();
-			while (It != m_cache.end())
+			auto It = m_storage.range_begin(invalidate_range, full_range);
+			while (It != m_storage.range_end())
 			{
-				const u32 base = It->first;
-				auto &range_data = It->second;
-
-				if (range_data.overlaps(invalidate_range))
-				{
-					for ( auto &tex : range_data )
-					{
-						AUDIT( tex.cache_tag != cache_tag || last_dirty_block != UINT32_MAX ); // cache tag should not match during the first loop
-						if (tex.cache_tag == cache_tag) continue; //already processed
-						if (!tex.is_locked()) continue;	//flushable sections can be 'clean' but unlocked. TODO: Handle this better
-
-						const rsx::section_bounds bounds = tex.get_overlap_test_bounds();
-
-						if (tex.overlaps(invalidate_range, bounds))
-						{
-							const auto new_range = tex.get_min_max(invalidate_range, bounds).to_page_range();
-							AUDIT( new_range.is_page_range() && invalidate_range.inside(new_range) );
-
-							const s32 signed_distance = tex.signed_distance(fault_range, section_bounds::locked_range);
-							const s32 distance = signed_distance < 0 ? -signed_distance : signed_distance;
-							const bool is_after_fault = (signed_distance >= 0);
-							
-							// The various chaining policies behave differently
-							bool extend_invalidate_range = tex.overlaps(fault_range, bounds);
-
-							if (invalidation_policy == invalidation_chain_policy::invalidation_chain_none)
-							{
-								// No chaining
-							}
-							else if (invalidation_ignore_unsynchronized && tex.is_flushable() && !tex.is_synchronized())
-							{
-								// Unsynchronized and does not overlap the fault range
-							}
-							else if ((!is_after_fault && invalidation_direction == invalidation_chain_direction::chain_direction_forward) ||
-								     ( is_after_fault && invalidation_direction == invalidation_chain_direction::chain_direction_backward))
-							{
-								// invalidation_direction mismatch
-							}
-							else if (invalidation_policy == invalidation_chain_policy::invalidation_chain_full)
-							{
-								// Chaining always enabled
-								extend_invalidate_range = true;
-							}
-							else if (invalidation_policy == invalidation_chain_policy::invalidation_chain_nearby)
-							{
-								// We invalidate if this section is near to the fault range
-								extend_invalidate_range |= (distance <= (4096u * invalidation_chain_nearby_pages));
-							}
-							else
-							{
-								fmt::throw_exception("Unreachable" HERE);
-							}
-
-							// Extend the various ranges
-							if (extend_invalidate_range && new_range != invalidate_range)
-							{
-								invalidate_range = new_range;
-								repeat_loop = true; // we will need to repeat the loop again
-								last_dirty_block = base; // stop the repeat loop once we finish this block
-							}
-
-							// Add texture to result, and update its cache tag
-							tex.cache_tag = cache_tag;
-							result.sections.push_back({ &tex, &range_data });
-						}
-					}
-				}
+				const u32 base = It.get_block().get_start();
 
 				// On the last loop, we stop once we're done with the last dirty block
-				if (!repeat_loop && base == last_dirty_block)
+				if (!repeat_loop && base > last_dirty_block) // note: blocks are iterated in order from lowest to highest base address
 					break;
+
+				auto &tex = *It;
+
+				AUDIT(tex.overlaps(invalidate_range, full_range));
+				AUDIT(tex.cache_tag != cache_tag || last_dirty_block != UINT32_MAX); // cache tag should not match during the first loop
+
+				if (tex.cache_tag != cache_tag && //not yet processed
+					tex.is_locked()) //flushable sections can be 'clean' but unlocked. TODO: Handle this better
+				{
+					const rsx::section_bounds bounds = tex.get_overlap_test_bounds();
+
+					if (bounds == It.get_bounds() || tex.overlaps(invalidate_range, bounds))
+					{
+						const auto new_range = tex.get_min_max(invalidate_range, bounds).to_page_range();
+						AUDIT(new_range.is_page_range() && invalidate_range.inside(new_range));
+
+						const s32 signed_distance = tex.signed_distance(fault_range, section_bounds::locked_range);
+						const s32 distance = signed_distance < 0 ? -signed_distance : signed_distance;
+						const bool is_after_fault = (signed_distance >= 0);
+
+						// The various chaining policies behave differently
+						bool extend_invalidate_range = tex.overlaps(fault_range, bounds);
+
+						if (invalidation_policy == invalidation_chain_policy::invalidation_chain_none)
+						{
+							// No chaining
+						}
+						else if (invalidation_ignore_unsynchronized && tex.is_flushable() && !tex.is_synchronized())
+						{
+							// Unsynchronized and does not overlap the fault range
+						}
+						else if ((!is_after_fault && invalidation_direction == invalidation_chain_direction::chain_direction_forward) ||
+							(is_after_fault && invalidation_direction == invalidation_chain_direction::chain_direction_backward))
+						{
+							// invalidation_direction mismatch
+						}
+						else if (invalidation_policy == invalidation_chain_policy::invalidation_chain_full)
+						{
+							// Chaining always enabled
+							extend_invalidate_range = true;
+						}
+						else if (invalidation_policy == invalidation_chain_policy::invalidation_chain_nearby)
+						{
+							// We invalidate if this section is near to the fault range
+							extend_invalidate_range |= (distance <= (4096u * invalidation_chain_nearby_pages));
+						}
+						else
+						{
+							fmt::throw_exception("Unreachable" HERE);
+						}
+
+						// Extend the various ranges
+						if (extend_invalidate_range && new_range != invalidate_range)
+						{
+							if (new_range.end > invalidate_range.end)
+								It.set_end(new_range.end);
+
+							invalidate_range = new_range;
+							repeat_loop = true; // we will need to repeat the loop again
+							last_dirty_block = base; // stop the repeat loop once we finish this block
+						}
+
+						// Add texture to result, and update its cache tag
+						tex.cache_tag = cache_tag;
+						result.sections.push_back(&tex);
+					}
+				}
 
 				// Iterate
 				It++;
 
 				// repeat_loop==true means some blocks are still dirty and we need to repeat the loop again
-				if (repeat_loop && It == m_cache.end())
+				if (repeat_loop && It == m_storage.range_end())
 				{
-					It = m_cache.begin();
+					It = m_storage.range_begin(invalidate_range, full_range);
 					repeat_loop = false;
 				}
 			}
 
-			AUDIT( It == m_cache.end() || It->first == last_dirty_block );
 			AUDIT( result.invalidate_range.is_page_range() );
 
 #ifdef TEXTURE_CACHE_DEBUG
@@ -1126,7 +1474,7 @@ namespace rsx
 
 				for (auto &obj : trampled_set.sections)
 				{
-					auto &tex = *obj.first;
+					auto &tex = *obj;
 
 					if (!discard_only)
 					{
@@ -1329,7 +1677,7 @@ namespace rsx
 
 	public:
 
-		texture_cache() {}
+		texture_cache() : m_storage(*this) {}
 		~texture_cache() {}
 
 		virtual void destroy() = 0;
@@ -1339,20 +1687,17 @@ namespace rsx
 		std::vector<section_storage_type*> find_texture_from_range(const address_range &test_range)
 		{
 			std::vector<section_storage_type*> results;
-			for (auto &address_range : m_cache)
+
+			for (auto It = m_storage.range_begin(test_range, full_range); It != m_storage.range_end(); It++)
 			{
-				auto &range_data = address_range.second;
-				if (!range_data.overlaps(test_range)) continue;
+				auto &tex = *It;
 
-				for (auto &tex : range_data)
-				{
-					// TODO ruipin: Removed as a workaround for certain bugs
-					//if (tex.get_section_base() > test_range.start)
-					//	continue;
+				// TODO ruipin: Removed as a workaround for certain bugs
+				//if (tex.get_section_base() > test_range.start)
+				//	continue;
 
-					if (!tex.is_dirty() && tex.overlaps(test_range, rsx::section_bounds::full_range))
-						results.push_back(&tex);
-				}
+				if (!tex.is_dirty())
+					results.push_back(&tex);
 			}
 
 			return results;
@@ -1360,17 +1705,12 @@ namespace rsx
 
 		section_storage_type *find_texture_from_dimensions(u32 rsx_address, u16 width = 0, u16 height = 0, u16 depth = 0, u16 mipmaps = 0)
 		{
-			auto found = m_cache.find(get_block_address(rsx_address));
-			if (found != m_cache.end())
+			auto &block = m_storage.block_for(rsx_address);
+			for (auto &tex : block)
 			{
-				auto &range_data = found->second;
-
-				for (auto &tex : range_data)
+				if (tex.matches(rsx_address, width, height, depth, mipmaps) && !tex.is_dirty())
 				{
-					if (tex.matches(rsx_address, width, height, depth, mipmaps) && !tex.is_dirty())
-					{
-						return &tex;
-					}
+					return &tex;
 				}
 			}
 
@@ -1379,95 +1719,88 @@ namespace rsx
 
 		section_storage_type& find_cached_texture(const address_range &range, bool confirm_dimensions = false, u16 width = 0, u16 height = 0, u16 depth = 0, u16 mipmaps = 0)
 		{
-			const u32 block_address = get_block_address(range.start);
+			auto &block = m_storage.block_for(range);
 
-			auto found = m_cache.find(block_address);
-			if (found != m_cache.end())
+			section_storage_type *best_fit = nullptr;
+			section_storage_type *first_dirty = nullptr;
+
+			// Try to find match in block
+			for (auto &tex : block)
 			{
-				auto &range_data = found->second;
-				std::pair<section_storage_type*, ranged_storage*> best_fit = {};
-
-				for (auto &tex : range_data)
+				if (tex.matches(range))
 				{
-					if (tex.matches(range))
+					if (!tex.is_dirty())
 					{
-						if (!tex.is_dirty())
+						if (!confirm_dimensions || tex.matches_dimensions(width, height, depth, mipmaps))
 						{
-							// TODO ruipin: What if confirm_dimensions==false and there are two regions that match the address range?
-							if (!confirm_dimensions || tex.matches(range.start, width, height, depth, mipmaps))
-							{
-								return tex;
-							}
-							else
-							{
-								LOG_ERROR(RSX, "Cached object for address 0x%X was found, but it does not match stored parameters. %d x %d vs %d x %d", range.start, width, height, tex.get_width(), tex.get_height());
-							}
+							return tex;
 						}
-						else if (!best_fit.first)
+						else
 						{
-							//By grabbing a ref to a matching entry, duplicates are avoided
-							best_fit = { &tex, &range_data };
+							LOG_ERROR(RSX, "Cached object for address 0x%X was found, but it does not match stored parameters. %d x %d vs %d x %d", range.start, width, height, tex.get_width(), tex.get_height());
 						}
+					}
+					else if (best_fit == nullptr)
+					{
+						//By grabbing a ref to a matching entry, duplicates are avoided
+						best_fit = &tex;
 					}
 				}
-
-				if (best_fit.first)
+				else if(first_dirty == nullptr && tex.is_dirty())
 				{
-					AUDIT( !best_fit.first->is_locked() );
-
-					if (best_fit.first->exists())
-					{
-						if (best_fit.first->get_context() != rsx::texture_upload_context::framebuffer_storage)
-							m_texture_memory_in_use -= best_fit.first->get_section_size();
-
-						m_unreleased_texture_objects--;
-						free_texture_section(*best_fit.first);
-					}
-
-					return *best_fit.first;
-				}
-
-				for (auto &tex : range_data)
-				{
-					if (tex.is_dirty())
-					{
-						AUDIT( !tex.is_locked() );
-
-						if (tex.exists())
-						{
-							if (tex.get_context() != rsx::texture_upload_context::framebuffer_storage)
-								m_texture_memory_in_use -= tex.get_section_size();
-
-							m_unreleased_texture_objects--;
-							free_texture_section(tex);
-						}
-
-						return tex;
-					}
+					AUDIT(!tex.is_locked());
+					first_dirty = &tex;
 				}
 			}
 
+			// If found, use the best fitting section
+			if (best_fit)
+			{
+				AUDIT( !best_fit->is_locked() );
+
+				if (best_fit->exists())
+				{
+					if (best_fit->get_context() != rsx::texture_upload_context::framebuffer_storage)
+						m_texture_memory_in_use -= best_fit->get_section_size();
+
+					m_unreleased_texture_objects--;
+					free_texture_section(*best_fit);
+				}
+
+				return *best_fit;
+			}
+
+			// Return the first dirty section found, if any
+			if (first_dirty != nullptr)
+			{
+				if (first_dirty->exists())
+				{
+					if (first_dirty->get_context() != rsx::texture_upload_context::framebuffer_storage)
+						m_texture_memory_in_use -= first_dirty->get_section_size();
+
+					m_unreleased_texture_objects--;
+					free_texture_section(*first_dirty);
+				}
+
+				return *first_dirty;
+			}
+
+			// Create and return a new section
 			update_cache_tag();
-			auto &tex = range_data_for(block_address).create_section();
-			AUDIT( !tex.is_locked() );
+			auto &tex = block.create_section();
 			return tex;
 		}
 
 		section_storage_type* find_flushable_section(const address_range &memory_range)
 		{
-			auto found = m_cache.find(get_block_address(memory_range.start));
-			if (found != m_cache.end())
+			auto &block = m_storage.block_for(memory_range);
+			for (auto &tex : block)
 			{
-				auto &range_data = found->second;
+				if (tex.is_dirty()) continue;
+				if (!tex.is_flushable() && !tex.is_flushed()) continue;
 
-				for (auto &tex : range_data)
-				{
-					if (tex.is_dirty()) continue;
-					if (!tex.is_flushable() && !tex.is_flushed()) continue;
-
-					if (tex.matches(memory_range))
-						return &tex;
-				}
+				if (tex.matches(memory_range))
+					return &tex;
 			}
 
 			return nullptr;
@@ -1579,7 +1912,7 @@ namespace rsx
 			region.set_memory_read_flags(flags, false);
 		}
 
-		virtual void on_memory_read_flags_changed(const cached_texture_section &section, rsx::memory_read_flags flags)
+		virtual void on_memory_read_flags_changed(const section_storage_type &section, rsx::memory_read_flags flags)
 		{
 #ifdef TEXTURE_CACHE_DEBUG
 			const auto &memory_range = section.get_section_range();
@@ -1592,7 +1925,7 @@ namespace rsx
 		}
 
 	private:
-		inline void update_flush_always_cache(const cached_texture_section &section, bool add)
+		inline void update_flush_always_cache(const section_storage_type &section, bool add)
 		{
 			const address_range& range = section.get_section_range();
 			if (add)
@@ -1648,56 +1981,6 @@ namespace rsx
 
 			//No valid object found in cache
 			return false;
-		}
-
-		std::tuple<bool, section_storage_type*> address_is_flushable(u32 address)
-		{
-			AUDIT( no_access_range.valid() );
-			if (!no_access_range.overlaps(address))
-				return std::make_tuple(false, nullptr);
-
-			reader_lock lock(m_cache_mutex);
-
-			auto found = m_cache.find(get_block_address(address));
-			if (found != m_cache.end())
-			{
-				auto &range_data = found->second;
-
-				for (auto &tex : range_data.data)
-				{
-					if (tex.is_dirty()) continue;
-					if (!tex.is_flushable()) continue;
-
-					if (tex.overlaps(address, rsx::section_bounds::locked_range))
-						return std::make_tuple(true, &tex);
-				}
-			}
-
-			for (auto &address_range : m_cache)
-			{
-				if (address_range.first == address)
-					continue;
-
-				auto &range_data = address_range.second;
-
-				//Quickly discard range
-				const u32 lock_base = address_range.first & ~0xfff;
-				const u32 lock_limit = align(range_data.max_range + address_range.first, 4096);
-
-				if (address < lock_base || address >= lock_limit)
-					continue;
-
-				for (auto &tex : range_data.data)
-				{
-					if (tex.is_dirty()) continue;
-					if (!tex.is_flushable()) continue;
-
-					if (tex.overlaps(address, rsx::section_bounds::locked_range))
-						return std::make_tuple(true, &tex);
-				}
-			}
-
-			return std::make_tuple(false, nullptr);
 		}
 
 		template <typename ...Args>
@@ -1842,17 +2125,10 @@ namespace rsx
 			std::lock_guard lock(m_cache_mutex);
 
 			//Reclaims all graphics memory consumed by dirty textures
-			std::vector<u32> empty_addresses;
-			empty_addresses.resize(32);
-
-			for (auto &address_range : m_cache)
+			size_t count = 0;
+			for (auto &block : m_storage)
 			{
-				auto &range_data = address_range.second;
-
-				if (range_data.get_valid_count() == 0)
-					empty_addresses.push_back(address_range.first);
-
-				for (auto &tex : range_data)
+				for (auto &tex : block)
 				{
 					if (!tex.is_dirty())
 						continue;
@@ -1862,16 +2138,12 @@ namespace rsx
 					{
 						free_texture_section(tex);
 						m_texture_memory_in_use -= tex.get_section_size();
+						count++;
 					}
 				}
 			}
 
-			//Free descriptor objects as well
-			for (const auto &address : empty_addresses)
-			{
-				m_cache.erase(address);
-			}
-
+			//AUDIT(count == m_unreleased_texture_objects);
 			m_unreleased_texture_objects = 0;
 		}
 
