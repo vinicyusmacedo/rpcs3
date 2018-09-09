@@ -414,6 +414,8 @@ namespace vk
 	class texture_cache : public rsx::texture_cache<vk::command_buffer, vk::cached_texture_section, vk::image*, vk::image_view*, vk::image, VkFormat>
 	{
 	private:
+		using superclass = rsx::texture_cache<vk::command_buffer, vk::cached_texture_section, vk::image*, vk::image_view*, vk::image, VkFormat>;
+
 		//Vulkan internals
 		vk::render_device* m_device;
 		vk::memory_type_mapping m_memory_types;
@@ -966,6 +968,7 @@ namespace vk
 		}
 
 	public:
+		using superclass::texture_cache;
 
 		void initialize(vk::render_device& device, VkQueue submit_queue, vk::vk_data_heap& upload_heap)
 		{
