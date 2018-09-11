@@ -767,7 +767,7 @@ namespace rsx
 			{
 				auto &tex = *It;
 
-				// TODO ruipin: Removed as a workaround for certain bugs
+				// TODO ruipin: Removed as a workaround for a bug, will need to be fixed by kd-11
 				//if (tex.get_section_base() > test_range.start)
 				//	continue;
 
@@ -955,7 +955,7 @@ namespace rsx
 					}
 
 					// TODO ruipin: is this safe? What about NA/RO regions overlapping this one?
-					// What about the small time period between this unprotect and the reprotect below?
+					//              What about the small time period between this unprotect and the reprotect below?
 					surface->unprotect();
 				}
 			}
@@ -972,7 +972,7 @@ namespace rsx
 
 			section_storage_type& region = find_cached_texture(memory_range, false);
 
-			if (!region.exists() || region.get_context() != texture_upload_context::framebuffer_storage) // TODO ruipin: Why is this framebuffer check here?
+			if (!region.exists() || region.get_context() != texture_upload_context::framebuffer_storage)
 			{
 #ifdef TEXTURE_CACHE_DEBUG
 				if (flags == memory_read_flags::flush_once)
@@ -1177,7 +1177,6 @@ namespace rsx
 			if (value.misses >= m_cache_miss_threshold)
 			{
 				// Disable prediction if memory is flagged as flush_always
-				// TODO ruipin: Shouldn't this do an overlaps/inside check?
 				if (m_flush_always_cache.find(memory_range.start) == m_flush_always_cache.end())
 				{
 					// TODO: Determine better way of setting threshold
@@ -1218,6 +1217,7 @@ namespace rsx
 				}
 			}
 
+			// TODO ruipin: This fails, most likely a bug
 			//AUDIT(count == m_unreleased_texture_objects);
 			m_unreleased_texture_objects = 0;
 		}
@@ -1426,7 +1426,7 @@ namespace rsx
 			auto overlapping = m_rtts.get_merged_texture_memory_region(texaddr, tex_width, tex_height, tex_pitch, bpp);
 			bool requires_merging = false;
 
-			// TODO ruipin: This fails. Bug?
+			// TODO ruipin: This AUDIT fails due to a bug that kd will have to fix
 			//AUDIT( !overlapping.empty() );
 			if (overlapping.size() > 1)
 			{
@@ -1757,7 +1757,6 @@ namespace rsx
 				lock.upgrade();
 
 				//Invalidate with writing=false, discard=false, rebuild=false, native_flush=true
-				//TODO ruipin: must change to writing=true to fix the texture at the same address being locked RO
 				invalidate_range_impl_base(tex_range, false, false, true, std::forward<Args>(extras)...);
 
 				//NOTE: SRGB correction is to be handled in the fragment shader; upload as linear RGB
