@@ -438,7 +438,6 @@ namespace vk
 						m_discardable_storage.push_back(tex);
 					}
 
-					// TODO ruipin: double-check if this can ever be called while other sections are kept and overlapping
 					if (tex.is_locked())
 						tex.unprotect();
 

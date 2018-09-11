@@ -467,8 +467,8 @@ namespace rsx
 	public:
 		static constexpr u32 block_size = 0x100'0000;
 		static_assert(block_size % 4096u == 0, "block_size must be a multiple of the page size");
-		static constexpr u32 num_blocks = (u32)(0x1'0000'0000ull / block_size);
-		static_assert((num_blocks > 0) && ((u64)(num_blocks)* block_size == 0x1'0000'0000ull), "Invalid block_size/num_blocks");
+		static constexpr u32 num_blocks = u32{0x1'0000'0000ull / block_size};
+		static_assert((num_blocks > 0) && (u64{num_blocks} *block_size == 0x1'0000'0000ull), "Invalid block_size/num_blocks");
 
 		using section_storage_type = _section_storage_type;
 		using texture_cache_type = texture_cache_base<section_storage_type>;
@@ -886,12 +886,6 @@ namespace rsx
 		{
 			utils::protection old_prot = get_protection();
 			rsx::buffered_section::unprotect();
-
-			/* ruipin TODO ?
-			flushed = false;
-			synchronized = false;
-			sync_timestamp = 0ull; */
-
 			post_protect(old_prot, utils::protection::rw);
 		}
 
@@ -899,12 +893,6 @@ namespace rsx
 		{
 			utils::protection old_prot = get_protection();
 			rsx::buffered_section::discard();
-
-			/* ruipin TODO ?
-			flushed = false;
-			synchronized = false;
-			sync_timestamp = 0ull; */
-
 			post_protect(old_prot, utils::protection::rw);
 		}
 
@@ -950,25 +938,21 @@ namespace rsx
 
 		void set_view_flags(rsx::texture_create_flags flags)
 		{
-			//AUDIT( flags == view_flags || !is_locked());
 			view_flags = flags;
 		}
 
 		void set_context(rsx::texture_upload_context upload_context)
 		{
-			//AUDIT( upload_context == context || !is_locked() );
 			context = upload_context;
 		}
 
 		void set_image_type(rsx::texture_dimension_extended type)
 		{
-			//AUDIT( type == image_type || !is_locked() );
 			image_type = type;
 		}
 
 		void set_gcm_format(u32 format)
 		{
-			//AUDIT( format == gcm_format || !is_locked() );
 			gcm_format = format;
 		}
 

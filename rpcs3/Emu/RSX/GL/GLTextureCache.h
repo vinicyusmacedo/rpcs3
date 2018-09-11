@@ -597,7 +597,6 @@ namespace gl
 				//Already destroyed
 				return;
 
-			// TODO ruipin: Double-check if this can ever be called while other sections are kept and are overlapping
 			if (is_locked())
 				unprotect();
 
