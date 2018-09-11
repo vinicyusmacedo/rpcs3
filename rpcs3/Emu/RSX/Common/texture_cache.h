@@ -68,20 +68,21 @@ namespace rsx
 		}
 	};
 
+
 	/**
 	 * Cached texture section and Ranged storage
 	 */
 
-	template <typename section_storage_type, size_t array_elements>
+	template <typename section_storage_type, size_t array_size>
 	class ranged_storage_block_list
 	{
-		static_assert(array_elements > 0, "array_elements must be positive non-zero");
+		static_assert(array_size > 0, "array_elements must be positive non-zero");
 
 	public:
 		using value_type = section_storage_type;
-		using array_type = typename std::array<value_type, array_elements>;
-		using list_type  = typename std::list<array_type>;
-		using size_type  = size_t;
+		using array_type = typename std::array<value_type, array_size>;
+		using list_type = typename std::list<array_type>;
+		using size_type = u32;
 
 		// Iterator
 		template <typename T, typename block_list, typename list_iterator>
@@ -90,41 +91,40 @@ namespace rsx
 		public:
 			// Traits
 			using value_type = T;
-			using pointer = T * ;
+			using pointer = T*;
 			using difference_type = int;
-			using reference = T & ;
+			using reference = T&;
 			using iterator_category = std::forward_iterator_tag;
 
 			// Constructors
 			iterator_tmpl() = default;
 			iterator_tmpl(block_list *_block) :
 				block(_block),
-				list_it(_block->data.begin())
+				list_it(_block->m_data.begin()),
+				idx(0)
 			{
-				if (block->empty())
-					block = nullptr;
+				if (_block->empty())
+					idx = UINT32_MAX;
 			}
 
-		 private:
+		private:
 			// Members
 			block_list *block;
 			list_iterator list_it = {};
-			size_type idx = 0;
+			size_type idx = UINT32_MAX;
 			size_type array_idx = 0;
 
 			inline void next()
 			{
-				AUDIT(block != nullptr);
-
 				idx++;
 				if (idx >= block->size())
 				{
-					block = nullptr;
+					idx = UINT32_MAX;
 					return;
 				}
 
 				array_idx++;
-				if (array_idx >= array_elements)
+				if (array_idx >= array_size)
 				{
 					array_idx = 0;
 					list_it++;
@@ -136,33 +136,38 @@ namespace rsx
 			inline pointer operator->() const { return &((*list_it)[array_idx]); }
 			inline reference operator++() { next(); return **this; }
 			inline reference operator++(int) { auto &res = **this;  next(); return res; }
-			inline bool operator==(const iterator_tmpl &rhs) const { return block == rhs.block && (block == nullptr || idx == rhs.idx); }
-			inline bool operator!=(const iterator_tmpl &rhs) const { return !operator==(rhs); }
+			inline bool operator==(const iterator_tmpl &rhs) const { return idx == rhs.idx; }
+			inline bool operator!=(const iterator_tmpl &rhs) const { return idx != rhs.idx; }
 		};
 
 		using iterator = iterator_tmpl<value_type, ranged_storage_block_list, typename list_type::iterator>;
 		using const_iterator = iterator_tmpl<const value_type, const ranged_storage_block_list, typename list_type::const_iterator>;
 
 		// Members
-		size_type _size;
-		size_type _capacity;
-		list_type data;
+		size_type m_size = 0;
+		list_type m_data;
+		typename list_type::iterator m_data_it;
+		size_type m_array_idx;
+		size_type m_capacity;
 
 		// Helpers
-		inline size_type free_capacity() const
+		inline void next_array()
 		{
-			return _capacity - _size;
+			if (m_data_it == m_data.end() || ++m_data_it == m_data.end())
+			{
+				m_data_it = m_data.emplace(m_data_it);
+				m_capacity += array_size;
+			}
+
+			m_array_idx = 0;
 		}
 
-		inline void add_capacity()
-		{
-			data.emplace_back();
-			_capacity += array_elements;
-		}
-
-	 public:
+	public:
 		// Constructor, Destructor
-		ranged_storage_block_list() = default;
+		ranged_storage_block_list() :
+			m_data_it(m_data.end()),
+			m_array_idx(UINT32_MAX)
+		{}
 
 		// Iterator
 		constexpr iterator begin() noexcept { return { this }; }
@@ -174,50 +179,59 @@ namespace rsx
 		inline value_type& front()
 		{
 			AUDIT(!empty());
-			return data.front()[0];
+			return m_data.front()[0];
 		}
 
 		inline value_type& back()
 		{
-			AUDIT(!empty());
-			return data.back()[(_size-1) % array_elements];
+			AUDIT(m_data_it != m_data.end() && m_array_idx < array_size);
+			return (*m_data_it)[m_array_idx];
 		}
 
 		// Other operations on data
-		inline size_type size() const { return _size; }
-		inline bool empty() const { return _size == 0; }
+		inline size_type size() const { return m_size; }
+		inline size_type capacity() const { return m_capacity; }
+		inline bool empty() const { return m_size == 0; }
 
 		inline void clear()
 		{
-			_size = 0;
+			m_size = 0;
+			m_array_idx = 0;
+			m_data_it = m_data.begin();
 		}
 
 		inline void free()
 		{
-			clear();
-			data.resize(0);
-			_capacity = 0;
+			m_size = 0;
+			m_array_idx = 0;
+			m_capacity = 0;
+			m_data.resize(0);
+			m_data_it = m_data.end();
 		}
 
 		inline void reserve(size_type new_size)
 		{
-			if (new_size == 0) return;
-			data.reserve((new_size-1 / array_elements) + 1);
+			if (new_size <= m_capacity) return;
+			size_type new_num_arrays = ((new_size - 1) / array_size) + 1;
+			m_data.reserve(new_num_arrays);
+			m_capacity = new_num_arrays * array_size;
 		}
 
 		template <typename ...Args>
 		inline value_type& emplace_back(Args&&... args)
 		{
-			if (free_capacity() == 0)
-				add_capacity();
+			if (m_array_idx >= array_size)
+				next_array();
 
-			AUDIT(!data.empty() && free_capacity() > 0);
-			value_type* dest = &(data.back()[_size % array_elements]);
+			ASSERT(m_capacity > 0 && m_array_idx < array_size && m_data_it != m_data.end());
+
+			value_type *dest = &((*m_data_it)[m_array_idx++]);
 			new (dest) value_type(std::forward<Args>(args)...);
-			_size++;
+			m_size++;
 			return *dest;
 		}
 	};
+
 
 	template <typename section_storage_type>
 	class texture_cache_base
@@ -244,17 +258,6 @@ namespace rsx
 		static constexpr u32 num_blocks = ranged_storage_type::num_blocks;
 		static constexpr u32 block_size = ranged_storage_type::block_size;
 
-		struct SectionPtrHash
-		{
-			inline size_t operator()(const section_storage_type* ptr) const
-			{
-				auto _ptr = reinterpret_cast<uintptr_t>(ptr);
-#if SIZE_MAX < UINTPTR_MAX
-				_ptr %= SIZE_MAX;
-#endif
-				return _ptr;
-			}
-		};
 		using unowned_container_type = std::unordered_set<section_storage_type*>;
 		using unowned_iterator       = typename unowned_container_type::iterator;
 		using unowned_const_iterator = typename unowned_container_type::const_iterator;
@@ -478,8 +481,9 @@ namespace rsx
 		}
 
 		/**
-		 * Wrappers
+		 * Iterators
 		 */
+
 		constexpr auto begin() { return std::begin(blocks); }
 		constexpr auto begin() const { return std::begin(blocks); }
 		constexpr auto end() { return std::end(blocks); }
@@ -535,15 +539,12 @@ namespace rsx
 			range_iterator_tmpl() = default; // end iterator
 			explicit range_iterator_tmpl(ranged_storage &storage, const address_range &_range, section_bounds _bounds) :
 				range(_range),
-				bounds(_bounds)
+				bounds(_bounds),
+				block(&storage.block_for(range.start)),
+				unowned_it(block->unowned_begin()),
+				unowned_remaining(true),
+				cur_block_it(block->begin())
 			{
-				block = &storage.block_for(range.start);
-				unowned_remaining = true;
-
-				// init iterators
-				unowned_it = block->unowned_begin();
-				cur_block_it = block->begin();
-
 				// do a "fake" iteration to ensure the internal state is consistent
 				next(false);
 			}
@@ -553,100 +554,89 @@ namespace rsx
 			address_range range;
 			section_bounds bounds;
 
-			block_type *block;
-			bool unowned_remaining = true;
+			block_type *block = nullptr;
+			bool needs_overlap_check = true;
+			bool unowned_remaining = false;
 			unowned_iterator unowned_it = {};
 			section_iterator cur_block_it = {};
+			pointer obj = nullptr;
 
 			inline void next(bool iterate = true)
 			{
 				AUDIT(block != nullptr);
 
-				do
+				if (unowned_remaining)
 				{
-					// Still have "unowned" sections from blocks before the range to loop through
-					if (unowned_remaining)
+					do
 					{
+						// Still have "unowned" sections from blocks before the range to loop through
 						auto blk_end = block->unowned_end();
-						if(iterate && unowned_it != blk_end)
+						if (iterate && unowned_it != blk_end)
 							unowned_it++;
 
 						if (unowned_it != blk_end)
 						{
-							iterate = true; // we must allow iterations in further loops or we'll get a deadlock
-							AUDIT(is_valid());
+							obj = *unowned_it;
+							if (obj->overlaps(range, bounds))
+								return;
+
+							iterate = true;
 							continue;
 						}
 
-						// no more unowned sections remaining
+						// No more unowned sections remaining
 						unowned_remaining = false;
-
-						// We need to check whether the first cur_block_it is within the range we want
 						iterate = false;
-					}
+						break;
 
-					// Iterate current block
-					auto blk_end = block->end();
-					if (iterate && cur_block_it != blk_end)
-						cur_block_it++;
-
-					if (cur_block_it == blk_end)
-					{
-						// Go to next block
-						block = block->next_block();
-
-						if (block == nullptr || block->get_start() > range.end) // Reached end
-						{
-							block = nullptr;
-							break;
-						}
-
-						cur_block_it = block->begin();
-					}
-
-					iterate = true; // we must allow iterations in further loops or we'll get a deadlock
-					AUDIT(is_valid() || cur_block_it == block->end());
+					} while (true);
 				}
-				while (cur_block_it == block->end() || !((*this)->overlaps(range, bounds)));
 
-				AUDIT(block == nullptr || (*this)->get_section_range().valid());
-			}
+				// Go to next block
+				do
+				{
+					// Iterate current block
+					do
+					{
+						auto blk_end = block->end();
+						if (iterate && cur_block_it != blk_end)
+							cur_block_it++;
 
-			inline bool is_valid() const
-			{
-				return block != nullptr && (
-					( unowned_remaining && unowned_it   != block->unowned_end()) ||
-					(!unowned_remaining && cur_block_it != block->end())
-				);
+						if (cur_block_it != blk_end)
+						{
+							obj = &(*cur_block_it);
+							if (!needs_overlap_check || obj->overlaps(range, bounds))
+								return;
+
+							iterate = true;
+							continue;
+						}
+						break;
+
+					} while (true);
+
+					// Move to next block(s)
+					block = block->next_block();
+					if (block == nullptr || block->get_start() > range.end) // Reached end
+					{
+						block = nullptr;
+						obj = nullptr;
+						return;
+					}
+
+					needs_overlap_check = (block->get_end() > range.end);
+					cur_block_it = block->begin();
+					iterate = false;
+
+				} while (true);
 			}
 
 		public:
-			inline reference operator*() const {
-				AUDIT(block != nullptr);
-				if (unowned_remaining)
-					return **unowned_it;
-				else
-					return *cur_block_it;
-			}
-
-			inline pointer operator->() const {
-				AUDIT(block != nullptr);
-				if (unowned_remaining)
-					return *unowned_it;
-				else
-					return &(*cur_block_it);
-			}
-
-			inline reference operator++() { next(); return **this; }
-			inline reference operator++(int) { auto ptr = &(**this); next(); return *ptr; }
-			inline bool operator==(const range_iterator_tmpl &rhs) const
-			{
-				return block == rhs.block && (
-						block == nullptr ||
-						( unowned_remaining && rhs.unowned_remaining && unowned_it == rhs.unowned_it) ||
-						(!unowned_remaining && cur_block_it == rhs.cur_block_it)
-					);
-			}
+			inline reference operator*() const { return *obj; }
+			inline pointer operator->() const { return obj; }
+			inline reference operator++() { next(); return *obj; }
+			inline reference operator++(int) { auto *ptr = obj; next(); return *ptr; }
+			inline bool operator==(const range_iterator_tmpl &rhs) const { return obj == rhs.obj && unowned_remaining == rhs.unowned_remaining; }
 			inline bool operator!=(const range_iterator_tmpl &rhs) const { return !operator==(rhs); }
 
 			inline void set_end(u32 new_end)
