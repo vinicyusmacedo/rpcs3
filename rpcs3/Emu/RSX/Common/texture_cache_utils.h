@@ -133,6 +133,8 @@ namespace rsx
 					array_idx = 0;
 					list_it++;
 				}
+
+				AUDIT( (*this)->valid() );
 			}
 
 		public:
@@ -257,7 +259,8 @@ namespace rsx
 		using section_storage_type = typename ranged_storage_type::section_storage_type;
 		using texture_cache_type = typename ranged_storage_type::texture_cache_type;
 
-		using block_container_type = ranged_storage_block_list<section_storage_type, 32>;
+		using block_container_type = std::list<section_storage_type>;
+		//using block_container_type = ranged_storage_block_list<section_storage_type, 32>;
 		using iterator = typename block_container_type::iterator;
 		using const_iterator = typename block_container_type::const_iterator;
 
@@ -355,7 +358,7 @@ namespace rsx
 		{
 			for (auto &section : *this)
 			{
-				if (section.get_section_range().valid())
+				if (!section.is_dirty())
 					remove_owned_section_overlaps(section);
 			}
 
@@ -406,7 +409,7 @@ namespace rsx
 			remove_one();
 		}
 
-		inline void pre_section_reset(section_storage_type &section)
+		inline void section_invalidated(section_storage_type &section)
 		{
 			AUDIT(range.overlaps(section.get_section_range().start));
 			remove_owned_section_overlaps(section);
@@ -447,17 +450,6 @@ namespace rsx
 		inline unowned_iterator unowned_end() { return unowned.end(); }
 		inline unowned_const_iterator unowned_end() const { return unowned.end(); }
 		inline bool unowned_empty() const { return unowned.empty(); }
-
-		/**
-		 * Debug
-		 */
-#ifdef TEXTURE_CACHE_DEBUG
-		void verify_protection() const
-		{
-			for (auto &section : *this)
-				section.verify_protection();
-		}
-#endif //TEXTURE_CACHE_DEBUG
 	};
 
 
@@ -505,6 +497,11 @@ namespace rsx
 			return blocks[address / block_size];
 		}
 
+		inline const block_type& block_for(u32 address) const
+		{
+			return blocks[address / block_size];
+		}
+
 		inline block_type& block_for(const address_range &range)
 		{
 			AUDIT(range.valid());
@@ -532,7 +529,7 @@ namespace rsx
 		 * Ranged Iterator
 		 */
 		 // Iterator
-		template <typename T, typename unowned_iterator, typename section_iterator>
+		template <typename T, typename unowned_iterator, typename section_iterator, typename block_type, typename parent_type>
 		class range_iterator_tmpl
 		{
 		public:
@@ -545,13 +542,14 @@ namespace rsx
 
 			// Constructors
 			range_iterator_tmpl() = default; // end iterator
-			explicit range_iterator_tmpl(ranged_storage &storage, const address_range &_range, section_bounds _bounds) :
+			explicit range_iterator_tmpl(parent_type &storage, const address_range &_range, section_bounds _bounds, bool _locked_only) :
 				range(_range),
 				bounds(_bounds),
 				block(&storage.block_for(range.start)),
 				unowned_it(block->unowned_begin()),
 				unowned_remaining(true),
-				cur_block_it(block->begin())
+				cur_block_it(block->begin()),
+				locked_only(_locked_only)
 			{
 				// do a "fake" iteration to ensure the internal state is consistent
 				next(false);
@@ -568,6 +566,7 @@ namespace rsx
 			unowned_iterator unowned_it = {};
 			section_iterator cur_block_it = {};
 			pointer obj = nullptr;
+			bool locked_only = false;
 
 			inline void next(bool iterate = true)
 			{
@@ -585,7 +584,7 @@ namespace rsx
 						if (unowned_it != blk_end)
 						{
 							obj = *unowned_it;
-							if (obj->overlaps(range, bounds))
+							if (!obj->is_dirty() && obj->overlaps(range, bounds))
 								return;
 
 							iterate = true;
@@ -613,7 +612,7 @@ namespace rsx
 						if (cur_block_it != blk_end)
 						{
 							obj = &(*cur_block_it);
-							if (!needs_overlap_check || obj->overlaps(range, bounds))
+							if (!obj->is_dirty() && (!locked_only || obj->is_locked()) && (!needs_overlap_check || obj->overlaps(range, bounds)))
 								return;
 
 							iterate = true;
@@ -624,17 +623,20 @@ namespace rsx
 					} while (true);
 
 					// Move to next block(s)
-					block = block->next_block();
-					if (block == nullptr || block->get_start() > range.end) // Reached end
+					do
 					{
-						block = nullptr;
-						obj = nullptr;
-						return;
-					}
+						block = block->next_block();
+						if (block == nullptr || block->get_start() > range.end) // Reached end
+						{
+							block = nullptr;
+							obj = nullptr;
+							return;
+						}
 
-					needs_overlap_check = (block->get_end() > range.end);
-					cur_block_it = block->begin();
-					iterate = false;
+						needs_overlap_check = (block->get_end() > range.end);
+						cur_block_it = block->begin();
+						iterate = false;
+					} while (locked_only && block->get_valid_count() == 0); // find a block with locked sections
 
 				} while (true);
 			}
@@ -668,19 +670,19 @@ namespace rsx
 			}
 		};
 
-		using range_iterator = range_iterator_tmpl<section_storage_type, typename block_type::unowned_iterator, typename block_type::iterator>;
-		using range_const_iterator = range_iterator_tmpl<const section_storage_type, typename block_type::unowned_const_iterator, typename block_type::const_iterator>;
+		using range_iterator = range_iterator_tmpl<section_storage_type, typename block_type::unowned_iterator, typename block_type::iterator, block_type, ranged_storage>;
+		using range_const_iterator = range_iterator_tmpl<const section_storage_type, typename block_type::unowned_const_iterator, typename block_type::const_iterator, const block_type, const ranged_storage>;
 
-		inline range_iterator range_begin(const address_range &range, section_bounds bounds) {
-			return range_iterator(*this, range, bounds);
+		inline range_iterator range_begin(const address_range &range, section_bounds bounds, bool locked_only = false) {
+			return range_iterator(*this, range, bounds, locked_only);
 		}
 
-		inline range_const_iterator range_begin(const address_range &range, section_bounds bounds) const {
-			return range_const_iterator(*this, range, bounds);
+		inline range_const_iterator range_begin(const address_range &range, section_bounds bounds, bool locked_only = false) const {
+			return range_const_iterator(*this, range, bounds, locked_only);
 		}
 
-		inline range_const_iterator range_begin(u32 address, section_bounds bounds) const {
-			return range_const_iterator(*this, address_range::create_start_length(address, 1), bounds);
+		inline range_const_iterator range_begin(u32 address, section_bounds bounds, bool locked_only = false) const {
+			return range_const_iterator(*this, address_range::create_start_length(address, 1), bounds, locked_only);
 		}
 
 		constexpr range_iterator range_end()
@@ -697,12 +699,29 @@ namespace rsx
 		 * Debug
 		 */
 #ifdef TEXTURE_CACHE_DEBUG
-		void verify_protection() const
+		void verify_protection(bool recount = false)
 		{
-			for (auto &block : *this)
-				block.verify_protection();
+			if (recount)
+			{
+				// Reset calculated part of the page_info struct
+				address_range::page_info.reset_refcount();
+
+				// Go through all blocks and update calculated values
+				for (auto &block : *this)
+				{
+					for (auto &tex : block)
+					{
+						if(tex.is_locked())
+							address_range::page_info.add(tex.get_locked_range(), tex.get_protection());
+					}
+				}
+			}
+
+			// Verify
+			address_range::page_info.verify();
 		}
 #endif //TEXTURE_CACHE_DEBUG
+
 	};
 
 
@@ -806,12 +825,26 @@ namespace rsx
 		 */
 		void reset(const address_range &memory_range)
 		{
-			AUDIT(m_block != nullptr && m_tex_cache != nullptr);
 			AUDIT(memory_range.valid());
 
-			if (get_section_range().valid()) // texture was previously reset
+			invalidate();
+
+			// Superclass
+			rsx::buffered_section::reset(memory_range);
+
+			// Callback
+			m_block->post_section_reset(*derived());
+		}
+
+		void invalidate()
+		{
+			if (is_dirty())
+				return;
+
+			AUDIT(m_block != nullptr && m_tex_cache != nullptr);
+			if (!is_dirty()) // texture was previously reset
 			{
-				m_block->pre_section_reset(*derived());
+				m_block->section_invalidated(*derived());
 
 				// Reset texture_cache m_flush_always_cache
 				if (readback_behaviour == memory_read_flags::flush_always)
@@ -819,7 +852,7 @@ namespace rsx
 			}
 
 			// Superclass
-			rsx::buffered_section::reset(memory_range);
+			rsx::buffered_section::invalidate();
 
 			// Reset member variables to the default
 			width = 0;
@@ -844,9 +877,6 @@ namespace rsx
 			view_flags = rsx::texture_create_flags::default_component_order;
 			context = rsx::texture_upload_context::shader_read;
 			image_type = rsx::texture_dimension_extended::texture_dimension_2d;
-
-			// Callback
-			m_block->post_section_reset(*derived());
 		}
 
 		/**
@@ -889,10 +919,10 @@ namespace rsx
 			post_protect(old_prot, utils::protection::rw);
 		}
 
-		inline void discard()
+		inline void discard(bool new_dirty = true)
 		{
 			utils::protection old_prot = get_protection();
-			rsx::buffered_section::discard();
+			rsx::buffered_section::discard(new_dirty);
 			post_protect(old_prot, utils::protection::rw);
 		}
 
@@ -992,9 +1022,12 @@ namespace rsx
 
 		rsx::section_bounds get_overlap_test_bounds() const
 		{
+			if (guard_policy == protection_policy::protect_policy_full_range)
+				return rsx::section_bounds::locked_range;
+
 			const bool strict_range_check = g_cfg.video.write_color_buffers || g_cfg.video.write_depth_buffer;
 			return (strict_range_check || get_context() == rsx::texture_upload_context::blit_engine_dst) ?
-				rsx::section_bounds::full_range :
+				rsx::section_bounds::confirmed_range :
 				rsx::section_bounds::locked_range;
 		}
 
