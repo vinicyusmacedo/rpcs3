@@ -29,31 +29,19 @@ namespace rsx
 
 	class buffered_section
 	{
+	public:
+		static const protection_policy guard_policy = protect_policy_full_range;
+
 	private:
 		address_range locked_range;
 		address_range cpu_range = {};
 		address_range confirmed_range;
 		weak_ptr super_ptr;
 
-		const protection_policy guard_policy = protect_policy_full_range;
 		utils::protection protection = utils::protection::rw;
 
 		bool locked = false;
-		bool dirty = false;
-
-		inline void tag_memory()
-		{
-			const address_range& range = get_confirmed_range();
-
-			volatile u32* first = get_ptr<volatile u32>(range.start, true);
-			volatile u32* last = get_ptr<volatile u32>(range.end-3, true);
-
-			*first = range.start;
-			*last = range.end;
-
-			flush_ptr(range.start, 4);
-			flush_ptr(range.end-3, 4);
-		}
+		bool dirty = true;
 
 		inline void init_lockable_range(const address_range &range)
 		{
@@ -90,30 +78,52 @@ namespace rsx
 
 		void reset(const address_range &memory_range)
 		{
-			verify(HERE), memory_range.valid() && locked == false;
+			verify(HERE), memory_range.valid();
+
+			invalidate();
 
 			cpu_range = address_range(memory_range);
-
-			confirmed_range.invalidate();
-			locked_range.invalidate();
-
-			protection = utils::protection::rw;
-			locked = false;
 			dirty = false;
 
 			init_lockable_range(cpu_range);
 		}
 
-		void protect(utils::protection prot, bool force = false)
+		void invalidate()
 		{
-			if (prot == protection && !force) return;
+			verify(HERE), locked == false;
+
+			cpu_range.invalidate();
+			confirmed_range.invalidate();
+			locked_range.invalidate();
+
+			protection = utils::protection::rw;
+			locked = false;
+			dirty = true;
+
+			super_ptr = {};
+		}
+
+		void protect(utils::protection new_prot, bool force = false)
+		{
+			if (new_prot == protection && !force) return;
 
 			verify(HERE), locked_range.is_page_range();
-			locked_range.protect(prot);
-			protection = prot;
-			locked = prot != utils::protection::rw;
 
-			if (prot == utils::protection::no)
+#ifdef TEXTURE_CACHE_DEBUG
+			if (new_prot != protection)
+			{
+				if (locked && !force)
+					address_range::page_info.remove(locked_range, protection);
+				if (new_prot != utils::protection::rw)
+					address_range::page_info.add(locked_range, new_prot);
+			}
+#endif // TEXTURE_CACHE_DEBUG
+
+			locked_range.protect(new_prot);
+			protection = new_prot;
+			locked = (protection != utils::protection::rw);
+
+			if (protection == utils::protection::no)
 			{
 				super_ptr = rsx::get_super_ptr(cpu_range);
 				verify(HERE), super_ptr;
@@ -129,12 +139,19 @@ namespace rsx
 
 				super_ptr = {};
 			}
+
 		}
 
 		void protect(utils::protection prot, const std::pair<u32, u32>& new_confirm)
 		{
 			// new_confirm.first is an offset after cpu_range.start
 			// new_confirm.second is the length (after cpu_range.start + new_confirm.first)
+
+#ifdef TEXTURE_CACHE_DEBUG
+			// We need to remove the lockable range from page_info as we will be re-protecting with force==true
+			if (locked)
+				address_range::page_info.remove(locked_range, protection);
+#endif
 
 			if (prot != utils::protection::rw)
 			{
@@ -145,6 +162,7 @@ namespace rsx
 				}
 				else
 				{
+					AUDIT(!locked);
 					confirmed_range = address_range::create_start_length(cpu_range.start + new_confirm.first, new_confirm.second);
 				}
 				
@@ -157,13 +175,19 @@ namespace rsx
 
 		inline void unprotect()
 		{
+			AUDIT(protection != utils::protection::rw);
 			protect(utils::protection::rw);
 		}
 
-		inline void discard()
+		inline void discard(bool new_dirty = true)
 		{
+#ifdef TEXTURE_CACHE_DEBUG
+			if (locked)
+				address_range::page_info.remove(locked_range, protection);
+#endif
+
 			protection = utils::protection::rw;
-			dirty = true;
+			dirty = new_dirty;
 			locked = false;
 		}
 
@@ -176,9 +200,9 @@ namespace rsx
 			case section_bounds::locked_range:
 				return locked_range;
 			case section_bounds::confirmed_range:
-				return confirmed_range;
+				return confirmed_range.valid() ? confirmed_range : cpu_range;
 			default:
-				fmt::throw_exception("Unreachable" HERE);
+				ASSUME(0);
 			}
 		}
 
@@ -265,7 +289,7 @@ namespace rsx
 
 		inline bool matches(const address_range &range) const
 		{
-			return cpu_range == range;
+			return cpu_range.valid() && cpu_range == range;
 		}
 
 		inline utils::protection get_protection() const
@@ -278,10 +302,9 @@ namespace rsx
 			return get_bounds(bounds).get_min_max(current_min_max);
 		}
 
-
 		/**
-		* Super Pointer
-		*/
+		 * Super Pointer
+		 */
 		template <typename T = void>
 		inline T* get_ptr_by_offset(u32 offset = 0, bool no_sync = false)
 		{
@@ -320,9 +343,39 @@ namespace rsx
 			return flush_ptr(range.start, range.length());
 		}
 
-		// ruipin TODO: these tests are no longer necessary with full-range protection enabled
+
+		/**
+		 * Memory tagging
+		 */
+	private:
+		inline void tag_memory()
+		{
+			// We only need to tag memory if we are in full-range mode
+			if (guard_policy == protect_policy_full_range)
+				return;
+
+			AUDIT(locked && super_ptr);
+
+			const address_range& range = get_confirmed_range();
+
+			volatile u32* first = get_ptr<volatile u32>(range.start, true);
+			volatile u32* last = get_ptr<volatile u32>(range.end - 3, true);
+
+			*first = range.start;
+			*last = range.end;
+
+			flush_ptr(range.start, 4);
+			flush_ptr(range.end - 3, 4);
+		}
+
+	public:
 		bool test_memory_head()
 		{
+			if (guard_policy == protect_policy_full_range)
+				return true;
+
+			AUDIT(locked && super_ptr);
+
 			const auto& range = get_confirmed_range();
 			volatile const u32* first = get_ptr<volatile const u32>(range.start);
 			return (*first == range.start);
@@ -330,23 +383,15 @@ namespace rsx
 
 		bool test_memory_tail()
 		{
+			if (guard_policy == protect_policy_full_range)
+				return true;
+
+			AUDIT(locked && super_ptr);
+
 			const auto& range = get_confirmed_range();
 			volatile const u32* last = get_ptr<volatile const u32>(range.end-3);
 			return (*last == range.end);
 		}
-
-#ifdef TEXTURE_CACHE_DEBUG
-		bool verify_protection() const
-		{
-			if (!locked || dirty)
-				return true;
-
-			verify(HERE), locked_range.is_page_range();
-			verify(HERE), protection != utils::protection::rw;
-
-			return locked_range.verify_protection(protection);
-		}
-#endif // TEXTURE_CACHE_DEBUG
 	};
 
 
