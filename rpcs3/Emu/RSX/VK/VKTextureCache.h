@@ -64,6 +64,9 @@ namespace vk
 			synchronized = false;
 			flushed = false;
 			sync_timestamp = 0ull;
+
+			// Notify superclass
+			superclass::on_section_resources_created();
 		}
 
 		void release_dma_resources()
@@ -82,11 +85,14 @@ namespace vk
 
 		void destroy()
 		{
+			m_tex_cache->on_section_destroyed(*this);
 			vram_texture = nullptr;
 			release_dma_resources();
+
+			superclass::on_section_resources_destroyed();
 		}
 
-		bool exists() const
+		inline bool exists() const
 		{
 			return (vram_texture != nullptr);
 		}
@@ -114,12 +120,6 @@ namespace vk
 		VkFormat get_format()
 		{
 			return vram_texture->info.format;
-		}
-
-		bool is_flushable() const
-		{
-			//This section is active and can be flushed to cpu
-			return (get_protection() == utils::protection::no);
 		}
 
 		bool is_flushed() const
@@ -413,6 +413,13 @@ namespace vk
 
 	class texture_cache : public rsx::texture_cache<vk::command_buffer, vk::cached_texture_section, vk::image*, vk::image_view*, vk::image, VkFormat>
 	{
+	public:
+		virtual void on_section_destroyed(cached_texture_section& tex)
+		{
+			m_discarded_memory_size += tex.get_section_size();
+			m_discardable_storage.push_back(tex);
+		}
+
 	private:
 		using superclass = rsx::texture_cache<vk::command_buffer, vk::cached_texture_section, vk::image*, vk::image_view*, vk::image, VkFormat>;
 
@@ -427,29 +434,11 @@ namespace vk
 		std::list<discarded_storage> m_discardable_storage;
 		std::atomic<u32> m_discarded_memory_size = { 0 };
 
-		void purge_cache()
+		void clear()
 		{
-			for (auto &block : m_storage)
-			{
-				for (auto &tex : block)
-				{
-					if (tex.exists())
-					{
-						m_discardable_storage.push_back(tex);
-					}
-
-					if (tex.is_locked())
-						tex.unprotect();
-
-					tex.release_dma_resources();
-				}
-
-				block.clear();
-			}
+			superclass::clear();
 
 			m_discardable_storage.clear();
-			m_unreleased_texture_objects = 0;
-			m_texture_memory_in_use = 0;
 			m_discarded_memory_size = 0;
 		}
 
@@ -493,14 +482,6 @@ namespace vk
 		}
 
 	protected:
-
-		void free_texture_section(cached_texture_section& tex) override
-		{
-			m_discarded_memory_size += tex.get_section_size();
-			m_discardable_storage.push_back(tex);
-			tex.destroy();
-		}
-
 		vk::image_view* create_temporary_subresource_view_impl(vk::command_buffer& cmd, vk::image* source, VkImageType image_type, VkImageViewType view_type,
 			u32 gcm_format, u16 x, u16 y, u16 w, u16 h, const texture_channel_remap_t& remap_vector, bool copy)
 		{
@@ -855,11 +836,10 @@ namespace vk
 
 			cached_texture_section& region = find_cached_texture(rsx_range, true, width, height, section_depth);
 			region.reset(rsx_range);
-			region.create(width, height, section_depth, mipmaps, image, 0, true, gcm_format);
-			region.set_dirty(false);
 			region.set_context(context);
 			region.set_gcm_format(gcm_format);
 			region.set_image_type(type);
+			region.create(width, height, section_depth, mipmaps, image, 0, true, gcm_format);
 
 			//Its not necessary to lock blit dst textures as they are just reused as necessary
 			if (context != rsx::texture_upload_context::blit_engine_dst)
@@ -980,7 +960,7 @@ namespace vk
 
 		void destroy() override
 		{
-			purge_cache();
+			clear();
 		}
 
 		bool is_depth_texture(u32 rsx_address, u32 rsx_size) override
@@ -989,7 +969,7 @@ namespace vk
 
 			auto &block = m_storage.block_for(rsx_address);
 
-			if (block.get_valid_count() == 0)
+			if (block.get_locked_count() == 0)
 				return false;
 
 			for (auto& tex : block)
@@ -1020,10 +1000,10 @@ namespace vk
 
 		void on_frame_end() override
 		{
-			if (m_unreleased_texture_objects >= m_max_zombie_objects ||
+			if (m_storage.m_unreleased_texture_objects >= m_max_zombie_objects ||
 				m_discarded_memory_size > 0x4000000) //If already holding over 64M in discardable memory, be frugal with memory resources
 			{
-				purge_dirty();
+				purge_unreleased_sections();
 			}
 
 			const u64 last_complete_frame = vk::get_last_completed_frame_id();
@@ -1243,12 +1223,12 @@ namespace vk
 
 		const u32 get_unreleased_textures_count() const override
 		{
-			return m_unreleased_texture_objects + (u32)m_discardable_storage.size();
+			return m_storage.m_unreleased_texture_objects + (u32)m_discardable_storage.size();
 		}
 
 		const u32 get_texture_memory_in_use() const override
 		{
-			return m_texture_memory_in_use;
+			return m_storage.m_texture_memory_in_use;
 		}
 
 		const u32 get_temporary_memory_in_use()

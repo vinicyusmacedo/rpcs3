@@ -14,10 +14,6 @@ extern "C"
 
 namespace rsx
 {
-#ifdef TEXTURE_CACHE_DEBUG
-	address_range::page_info_array address_range::page_info = {};
-#endif
-
 	void convert_scale_image(u8 *dst, AVPixelFormat dst_format, int dst_width, int dst_height, int dst_pitch,
 		const u8 *src, AVPixelFormat src_format, int src_width, int src_height, int src_pitch, int src_slice_h, bool bilinear)
 	{
@@ -516,4 +512,8 @@ namespace rsx
 			++src_ptr;
 		}
 	}
+
+#ifdef TEXTURE_CACHE_DEBUG
+	tex_cache_checker_t tex_cache_checker = {};
+#endif
 }
