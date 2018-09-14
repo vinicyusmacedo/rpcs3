@@ -1652,7 +1652,7 @@ void GLGSRender::on_invalidate_memory_range(const rsx::address_range &range)
 	//Discard all memory in that range without bothering with writeback (Force it for strict?)
 	if (m_gl_texture_cache.invalidate_range(range, true, true, false).violation_handled)
 	{
-		m_gl_texture_cache.purge_dirty();
+		m_gl_texture_cache.purge_unreleased_sections();
 		{
 			std::lock_guard lock(m_sampler_mutex);
 			m_samplers_dirty.store(true);

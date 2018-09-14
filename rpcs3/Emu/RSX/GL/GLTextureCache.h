@@ -295,6 +295,9 @@ namespace gl
 			this->mipmaps = mipmaps;
 
 			set_format(gl_format, gl_type, swap_bytes);
+
+			// Notify superclass
+			superclass::on_section_resources_created();
 		}
 
 		void create_read_only(gl::viewable_image* image, u32 width, u32 height, u32 depth, u32 mipmaps)
@@ -310,6 +313,9 @@ namespace gl
 
 			rsx_pitch = 0;
 			real_pitch = 0;
+
+			// Notify superclass
+			superclass::on_section_resources_created();
 		}
 
 		void make_flushable()
@@ -597,9 +603,6 @@ namespace gl
 				//Already destroyed
 				return;
 
-			if (is_locked())
-				unprotect();
-
 			if (pbo_id == 0)
 			{
 				//Read-only texture, destroy texture memory
@@ -618,21 +621,18 @@ namespace gl
 
 			if (!m_fence.is_empty())
 				m_fence.destroy();
+
+			superclass::on_section_resources_destroyed();
+		}
+
+		inline bool exists() const
+		{
+			return (vram_texture != nullptr);
 		}
 
 		texture::format get_format() const
 		{
 			return format;
-		}
-
-		bool exists() const
-		{
-			return vram_texture != nullptr;
-		}
-
-		bool is_flushable() const
-		{
-			return (get_protection() == utils::protection::no);
 		}
 
 		bool is_flushed() const
@@ -736,11 +736,8 @@ namespace gl
 
 		void clear()
 		{
-			for (auto &block : m_storage)
-				block.clear();
-
+			superclass::clear();
 			clear_temporary_subresources();
-			m_unreleased_texture_objects = 0;
 		}
 
 		void clear_temporary_subresources()
@@ -849,11 +846,6 @@ namespace gl
 		}
 
 	protected:
-
-		void free_texture_section(cached_texture_section& tex) override
-		{
-			tex.destroy();
-		}
 
 		gl::texture_view* create_temporary_subresource_view(void*&, gl::texture** src, u32 gcm_format, u16 x, u16 y, u16 w, u16 h,
 				const texture_channel_remap_t& remap_vector) override
@@ -1102,7 +1094,7 @@ namespace gl
 
 			auto &block = m_storage.block_for(rsx_address);
 
-			if (block.get_valid_count() == 0)
+			if (block.get_locked_count() == 0)
 				return false;
 
 			for (auto& tex : block)
@@ -1122,9 +1114,9 @@ namespace gl
 
 		void on_frame_end() override
 		{
-			if (m_unreleased_texture_objects >= m_max_zombie_objects)
+			if (m_storage.m_unreleased_texture_objects >= m_max_zombie_objects)
 			{
-				purge_dirty();
+				purge_unreleased_sections();
 			}
 
 			clear_temporary_subresources();

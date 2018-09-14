@@ -6,6 +6,7 @@
 #include "Common/ProgramStateCache.h"
 #include "Emu/Cell/Modules/cellMsgDialog.h"
 #include "Emu/System.h"
+#include "Common/texture_cache_checker.h"
 
 #include "rsx_utils.h"
 #include <thread>
@@ -26,6 +27,17 @@ namespace rsx
 		confirmed_range
 	};
 
+	static inline void memory_protect(const address_range& range, utils::protection prot)
+	{
+		verify(HERE), range.is_page_range();
+
+		//LOG_ERROR(RSX, "memory_protect(0x%x, 0x%x, %x)", static_cast<u32>(range.start), static_cast<u32>(range.length()), static_cast<u32>(prot));
+		utils::memory_protect(vm::base(range.start), range.length(), prot);
+
+#ifdef TEXTURE_CACHE_DEBUG
+		tex_cache_checker.set_protection(range, prot);
+#endif
+	}
 
 	class buffered_section
 	{
@@ -41,7 +53,6 @@ namespace rsx
 		utils::protection protection = utils::protection::rw;
 
 		bool locked = false;
-		bool dirty = true;
 
 		inline void init_lockable_range(const address_range &range)
 		{
@@ -78,31 +89,31 @@ namespace rsx
 
 		void reset(const address_range &memory_range)
 		{
-			verify(HERE), memory_range.valid();
-
-			invalidate();
+			verify(HERE), memory_range.valid() && locked == false;
 
 			cpu_range = address_range(memory_range);
-			dirty = false;
-
-			init_lockable_range(cpu_range);
-		}
-
-		void invalidate()
-		{
-			verify(HERE), locked == false;
-
-			cpu_range.invalidate();
 			confirmed_range.invalidate();
 			locked_range.invalidate();
 
 			protection = utils::protection::rw;
 			locked = false;
-			dirty = true;
 
 			super_ptr = {};
+
+			init_lockable_range(cpu_range);
 		}
 
+	protected:
+		void invalidate_range()
+		{
+			ASSERT(!locked);
+
+			cpu_range.invalidate();
+			confirmed_range.invalidate();
+			locked_range.invalidate();
+		}
+
+	public:
 		void protect(utils::protection new_prot, bool force = false)
 		{
 			if (new_prot == protection && !force) return;
@@ -113,13 +124,13 @@ namespace rsx
 			if (new_prot != protection)
 			{
 				if (locked && !force)
-					address_range::page_info.remove(locked_range, protection);
+					tex_cache_checker.remove(locked_range, protection);
 				if (new_prot != utils::protection::rw)
-					address_range::page_info.add(locked_range, new_prot);
+					tex_cache_checker.add(locked_range, new_prot);
 			}
 #endif // TEXTURE_CACHE_DEBUG
 
-			locked_range.protect(new_prot);
+			rsx::memory_protect(locked_range, new_prot);
 			protection = new_prot;
 			locked = (protection != utils::protection::rw);
 
@@ -150,7 +161,7 @@ namespace rsx
 #ifdef TEXTURE_CACHE_DEBUG
 			// We need to remove the lockable range from page_info as we will be re-protecting with force==true
 			if (locked)
-				address_range::page_info.remove(locked_range, protection);
+				tex_cache_checker.remove(locked_range, protection);
 #endif
 
 			if (prot != utils::protection::rw)
@@ -179,15 +190,14 @@ namespace rsx
 			protect(utils::protection::rw);
 		}
 
-		inline void discard(bool new_dirty = true)
+		inline void discard()
 		{
 #ifdef TEXTURE_CACHE_DEBUG
 			if (locked)
-				address_range::page_info.remove(locked_range, protection);
+				tex_cache_checker.remove(locked_range, protection);
 #endif
 
 			protection = utils::protection::rw;
-			dirty = new_dirty;
 			locked = false;
 		}
 
@@ -238,19 +248,14 @@ namespace rsx
 		/**
 		* Utilities
 		*/
+		inline bool valid_range() const
+		{
+			return cpu_range.valid();
+		}
+
 		inline bool is_locked() const
 		{
 			return locked;
-		}
-
-		inline bool is_dirty() const
-		{
-			return dirty;
-		}
-
-		inline void set_dirty(bool state)
-		{
-			dirty = state;
 		}
 
 		inline u32 get_section_base() const

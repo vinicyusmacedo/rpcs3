@@ -899,7 +899,7 @@ void VKGSRender::on_invalidate_memory_range(const rsx::address_range &range)
 	if (m_texture_cache.invalidate_range(range, true, true, false,
 		m_secondary_command_buffer, m_swapchain->get_graphics_queue()).violation_handled)
 	{
-		m_texture_cache.purge_dirty();
+		m_texture_cache.purge_unreleased_sections();
 		{
 			std::lock_guard lock(m_sampler_mutex);
 			m_samplers_dirty.store(true);
