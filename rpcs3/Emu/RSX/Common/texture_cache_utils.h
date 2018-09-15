@@ -903,6 +903,7 @@ namespace rsx
 		void reset(const address_range &memory_range)
 		{
 			AUDIT(memory_range.valid());
+			AUDIT(!exists());
 
 			// Invalidate if necessary
 			invalidate_range();
@@ -934,9 +935,8 @@ namespace rsx
 			context = rsx::texture_upload_context::shader_read;
 			image_type = rsx::texture_dimension_extended::texture_dimension_2d;
 
-			// Set to dirty if we don't have allocated resources
-			if (!exists())
-				set_dirty(true);
+			// Set to dirty
+			set_dirty(true);
 
 			// Notify that our CPU range is now valid
 			notify_range_valid();
@@ -1093,8 +1093,8 @@ namespace rsx
 
 				m_block->on_section_unprotected(*derived());
 
-				// Flushable sections may be unprotected and clean
-				if(is_flushable())
+				// Blit and framebuffers may be unprotected and clean
+				if(context == texture_upload_context::shader_read)
 					set_dirty(true);
 			}
 			else if (old_prot == utils::protection::rw && prot != utils::protection::rw)
@@ -1129,11 +1129,13 @@ namespace rsx
 			post_protect(old_prot, utils::protection::rw);
 		}
 
-		inline void discard()
+		inline void discard(bool set_dirty = true)
 		{
 			utils::protection old_prot = get_protection();
 			rsx::buffered_section::discard();
 			post_protect(old_prot, utils::protection::rw);
+			if (set_dirty)
+				this->set_dirty(true);
 		}
 
 		void reprotect(const utils::protection prot)
@@ -1183,7 +1185,7 @@ namespace rsx
 
 		void set_context(rsx::texture_upload_context upload_context)
 		{
-			AUDIT(!exists());
+			AUDIT(!exists() || context == upload_context);
 			context = upload_context;
 		}
 
@@ -1214,6 +1216,16 @@ namespace rsx
 		u16 get_height() const
 		{
 			return height;
+		}
+
+		u16 get_depth() const
+		{
+			return depth;
+		}
+
+		u16 get_mipmaps() const
+		{
+			return mipmaps;
 		}
 
 		u16 get_rsx_pitch() const
