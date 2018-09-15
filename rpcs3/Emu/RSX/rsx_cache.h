@@ -121,9 +121,9 @@ namespace rsx
 			verify(HERE), locked_range.is_page_range();
 
 #ifdef TEXTURE_CACHE_DEBUG
-			if (new_prot != protection)
+			if (new_prot != protection || force)
 			{
-				if (locked && !force)
+				if (locked && !force) // When force=true, it is the responsibility of the caller to remove this section from the checker refcounting
 					tex_cache_checker.remove(locked_range, protection);
 				if (new_prot != utils::protection::rw)
 					tex_cache_checker.add(locked_range, new_prot);
@@ -230,9 +230,19 @@ namespace rsx
 			return get_bounds(bounds).overlaps(other);
 		}
 
+		inline bool overlaps(const buffered_section &other, section_bounds bounds) const
+		{
+			return get_bounds(bounds).overlaps(other.get_bounds(bounds));
+		}
+
 		inline bool inside(const address_range &other, section_bounds bounds) const
 		{
 			return get_bounds(bounds).inside(other);
+		}
+
+		inline bool inside(const buffered_section &other, section_bounds bounds) const
+		{
+			return get_bounds(bounds).inside(other.get_bounds(bounds));
 		}
 
 		inline s32 signed_distance(const address_range &other, section_bounds bounds) const

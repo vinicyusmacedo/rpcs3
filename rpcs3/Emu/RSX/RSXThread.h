@@ -347,7 +347,7 @@ namespace rsx
 		std::shared_ptr<rsx::overlays::display_manager> m_overlay_manager;
 
 		// Invalidated memory range
-		std::vector<address_range> m_invalidated_memory_ranges;
+		address_range_vector m_invalidated_memory_ranges;
 
 	public:
 		RsxDmaControl* ctrl = nullptr;

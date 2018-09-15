@@ -1354,18 +1354,22 @@ namespace rsx
 			{
 				std::lock_guard lock(m_mtx_task);
 
-				for (const auto& range : m_invalidated_memory_ranges)
+				for (const auto& inv_range : m_invalidated_memory_ranges)
 				{
-					on_invalidate_memory_range(range);
+					if (!inv_range.valid())
+						continue;
+
+					on_invalidate_memory_range(inv_range);
 
 					// Clean the main memory super_ptr cache if invalidated
 					for (auto It = main_super_memory_block.begin(); It != main_super_memory_block.end();)
 					{
-						const auto mem_start = It->first;
-						const auto mem_end = mem_start + It->second.size();
+						const auto block_range = address_range::create_start_length(It->first, It->second.size());
 
-						if (range.overlaps(address_range::create_start_end(mem_start, mem_end)))
+						if (inv_range.overlaps(block_range))
 						{
+							AUDIT(block_range.inside(inv_range)); // If block_range is only partially inside inv_range, we have a problem
+
 							It = main_super_memory_block.erase(It);
 						}
 						else
@@ -2693,7 +2697,7 @@ namespace rsx
 			}
 
 			std::lock_guard lock(m_mtx_task);
-			m_invalidated_memory_ranges.push_back(address_range::create_start_length(address, size));
+			m_invalidated_memory_ranges.merge(address_range::create_start_length(address, size));
 		}
 	}
 
