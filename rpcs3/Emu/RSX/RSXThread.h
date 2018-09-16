@@ -468,6 +468,8 @@ namespace rsx
 		thread();
 		virtual ~thread();
 
+		void handle_invalidated_memory_ranges();
+
 		virtual void on_task() override;
 		virtual void on_exit() override;
 
@@ -598,6 +600,13 @@ namespace rsx
 		 * There is no swapping required except for 4 u8 (according to Bleach Soul Resurection)
 		 */
 		void write_inline_array_to_buffer(void *dst_buffer);
+
+		/**
+		 * Notify that a section of memory has been mapped
+		 * If there is a notify_memory_unmapped request on this range yet to be handled,
+		 * handles it immediately.
+		 */
+		void on_notify_memory_mapped(u32 address_base, u32 size);
 
 		/**
 		 * Notify that a section of memory has been unmapped
