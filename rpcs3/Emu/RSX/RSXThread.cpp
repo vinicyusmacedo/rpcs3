@@ -1,4 +1,4 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 #include "Emu/IdManager.h"
@@ -1353,33 +1353,7 @@ namespace rsx
 			if (!m_invalidated_memory_ranges.empty())
 			{
 				std::lock_guard lock(m_mtx_task);
-
-				for (const auto& inv_range : m_invalidated_memory_ranges)
-				{
-					if (!inv_range.valid())
-						continue;
-
-					on_invalidate_memory_range(inv_range);
-
-					// Clean the main memory super_ptr cache if invalidated
-					for (auto It = main_super_memory_block.begin(); It != main_super_memory_block.end();)
-					{
-						const auto block_range = address_range::create_start_length(It->first, It->second.size());
-
-						if (inv_range.overlaps(block_range))
-						{
-							AUDIT(block_range.inside(inv_range)); // If block_range is only partially inside inv_range, we have a problem
-
-							It = main_super_memory_block.erase(It);
-						}
-						else
-						{
-							It++;
-						}
-					}
-				}
-
-				m_invalidated_memory_ranges.clear();
+				handle_invalidated_memory_ranges();
 			}
 		}
 	}
@@ -2672,6 +2646,40 @@ namespace rsx
 		check_zcull_status(false);
 	}
 
+	void thread::on_notify_memory_mapped(u32 address, u32 size)
+	{
+		// In the case where an unmap is followed shortly after by a remap,
+		// we must block until RSX has invalidated the memory
+		// or lock m_mtx_task and do it ourselves
+
+		reader_lock lock(m_mtx_task);
+
+		if (!m_invalidated_memory_ranges.empty())
+		{
+
+			const auto map_range = address_range::create_start_length(address, size);
+			bool must_invalidate = false;
+
+			for (const auto& inv_range : m_invalidated_memory_ranges)
+			{
+				if (!inv_range.valid())
+					continue;
+
+				if (inv_range.overlaps(map_range))
+				{
+					must_invalidate = true;
+					break;
+				}
+			}
+
+			if (must_invalidate)
+			{
+				lock.upgrade();
+				handle_invalidated_memory_ranges();
+			}
+		}
+	}
+
 	void thread::on_notify_memory_unmapped(u32 address, u32 size)
 	{
 		if (!m_rsx_thread_exiting && address < 0xC0000000)
@@ -2699,6 +2707,37 @@ namespace rsx
 			std::lock_guard lock(m_mtx_task);
 			m_invalidated_memory_ranges.merge(address_range::create_start_length(address, size));
 		}
+	}
+
+	// NOTE: m_mtx_task lock must be acquired before calling this method
+	void thread::handle_invalidated_memory_ranges()
+	{
+		for (const auto& inv_range : m_invalidated_memory_ranges)
+		{
+			if (!inv_range.valid())
+				continue;
+
+			on_invalidate_memory_range(inv_range);
+
+			// Clean the main memory super_ptr cache if invalidated
+			for (auto It = main_super_memory_block.begin(); It != main_super_memory_block.end();)
+			{
+				const auto block_range = address_range::create_start_length(It->first, It->second.size());
+
+				if (inv_range.overlaps(block_range))
+				{
+					AUDIT(block_range.inside(inv_range)); // If block_range is only partially inside inv_range, we have a problem
+
+					It = main_super_memory_block.erase(It);
+				}
+				else
+				{
+					It++;
+				}
+			}
+		}
+
+		m_invalidated_memory_ranges.clear();
 	}
 
 	//Pause/cont wrappers for FIFO ctrl. Never call this from rsx thread itself!
