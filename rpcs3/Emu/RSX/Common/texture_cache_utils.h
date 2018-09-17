@@ -903,7 +903,7 @@ namespace rsx
 		void reset(const address_range &memory_range)
 		{
 			AUDIT(memory_range.valid());
-			AUDIT(!exists());
+			AUDIT(!is_locked());
 
 			// Invalidate if necessary
 			invalidate_range();
@@ -997,6 +997,9 @@ namespace rsx
 
 		void set_dirty(bool new_dirty)
 		{
+			if (new_dirty == false && !is_locked() && context == texture_upload_context::shader_read)
+				return;
+
 			dirty = new_dirty;
 
 			AUDIT(dirty || (!dirty && exists()));
@@ -1185,7 +1188,7 @@ namespace rsx
 
 		void set_context(rsx::texture_upload_context upload_context)
 		{
-			AUDIT(!exists() || context == upload_context);
+			AUDIT(!exists() || !is_locked() || context == upload_context);
 			context = upload_context;
 		}
 
