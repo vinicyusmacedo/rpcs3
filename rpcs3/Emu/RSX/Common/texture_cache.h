@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "../rsx_cache.h"
 #include "../rsx_utils.h"
@@ -95,7 +95,7 @@ namespace rsx
 			{
 				//-------------------------
 				// Check that the number of sections we "found" matches the sections known to be in the fault range
-				tex_cache_checker.check_unprotected(fault_range, !is_writing, true);
+				tex_cache_checker.check_unprotected(fault_range, !is_writing && invalidation_keep_ro_during_read, true);
 
 				// Check that the cache has the correct protections
 				tex_cache_checker.verify();
@@ -257,8 +257,6 @@ namespace rsx
 		// Invalidation
 		static const invalidation_chain_policy invalidation_policy = invalidation_chain_policy::invalidation_chain_none;
 		static const u32 invalidation_chain_nearby_pages = 0;
-		static const u32 invalidation_force_nearby_pages = 0;
-		static const bool invalidation_force_chain_once = 0;
 		static const invalidation_chain_direction invalidation_direction = invalidation_chain_direction::chain_direction_forward;
 		static const bool invalidation_ignore_unsynchronized = true; // If true, unsynchronized sections don't get forcefully flushed unless they overlap the fault range
 		static const bool invalidation_keep_ro_during_read = true; // If true, RO sections don't get flushed during a read, unless flushable textures are also present
@@ -392,14 +390,14 @@ namespace rsx
 				{
 					verify(HERE), section->is_flushed() || section->is_dirty();
 
-					section->discard(/*force_dirty*/ false);
+					section->discard(/*set_dirty*/ false);
 				}
 			};
 
 
 			// Merge ranges to unprotect
 			address_range_vector ranges_to_unprotect;
-			address_range_vector ranges_to_reprotect_ro;
+			address_range_vector ranges_to_protect_ro;
 			ranges_to_unprotect.reserve(data.sections_to_unprotect.size() + data.sections_to_flush.size() + data.sections_to_exclude.size());
 
 			merge_protected_ranges(ranges_to_unprotect, data.sections_to_unprotect);
@@ -409,34 +407,42 @@ namespace rsx
 			// Apply exclusions and collect ranges of excluded pages that need to be reprotected RO (i.e. only overlap RO regions)
 			if (!data.sections_to_exclude.empty())
 			{
-				ranges_to_reprotect_ro.reserve(data.sections_to_exclude.size());
+				ranges_to_protect_ro.reserve(data.sections_to_exclude.size());
 
 				u32 no_access_count = 0;
 				for (const auto &excluded : data.sections_to_exclude)
 				{
-					const auto &exclusion_range = excluded->get_locked_range();
+					address_range exclusion_range = excluded->get_locked_range();
+
+					// We need to make sure that the exclusion range is *inside* invalidate range
+					exclusion_range.intersect(data.invalidate_range);
+
+					// Sanity checks
 					AUDIT( exclusion_range.is_page_range() );
+					AUDIT(!exclusion_range.overlaps(data.fault_range));
 
 					// Apply exclusion
 					ranges_to_unprotect.exclude(exclusion_range);
 
 					// Keep track of RO exclusions
+					// TODO ruipin: Bug here, we cannot add the whole exclusion range to ranges_to_reprotect, only the part inside invalidate_range
 					utils::protection prot = excluded->get_protection();
 					if (prot == utils::protection::ro)
-						ranges_to_reprotect_ro.merge(exclusion_range);
+						ranges_to_protect_ro.merge(exclusion_range);
 					else if (prot == utils::protection::no)
 						no_access_count++;
 					else
 						fmt::throw_exception("Unreachable" HERE);
 				}
+				AUDIT(data.fault_range.inside(ranges_to_unprotect));
 
 				// Exclude NA ranges from ranges_to_reprotect_ro
-				if (no_access_count > 0 && !ranges_to_reprotect_ro.empty())
+				if (no_access_count > 0 && !ranges_to_protect_ro.empty())
 				{
 					for (auto &exclusion : data.sections_to_exclude)
 					{
 						if(exclusion->get_protection() != utils::protection::ro)
-							ranges_to_reprotect_ro.exclude(exclusion->get_locked_range());
+							ranges_to_protect_ro.exclude(exclusion->get_locked_range());
 					}
 				}
 			}
@@ -446,12 +452,21 @@ namespace rsx
 			if (data.exclude_fault_range)
 			{
 				ranges_to_unprotect.exclude(data.fault_range);
-				ranges_to_reprotect_ro.exclude(data.fault_range);
+				ranges_to_protect_ro.exclude(data.fault_range);
+
+				AUDIT(!ranges_to_unprotect.overlaps(data.fault_range));
+				AUDIT(!ranges_to_protect_ro.overlaps(data.fault_range));
 			}
+			else
+			{
+				AUDIT( ranges_to_unprotect.inside(data.invalidate_range) );
+				AUDIT( ranges_to_protect_ro.inside(data.invalidate_range) );
+			}
+			AUDIT( !ranges_to_protect_ro.overlaps(ranges_to_unprotect) );
 
 			// Unprotect and discard
 			protect_ranges(ranges_to_unprotect, utils::protection::rw);
-			protect_ranges(ranges_to_reprotect_ro, utils::protection::ro);
+			protect_ranges(ranges_to_protect_ro, utils::protection::ro);
 			discard_set(data.sections_to_unprotect);
 			discard_set(data.sections_to_flush);
 
@@ -471,21 +486,6 @@ namespace rsx
 			intersecting_set result = {};
 			address_range &invalidate_range = result.invalidate_range;
 			invalidate_range = fault_range; // Sections fully inside this range will be invalidated, others will be deemed false positives
-
-			// Add nearby pages to invalidation range
-			if (invalidation_force_nearby_pages > 0)
-			{
-				if (invalidation_direction != invalidation_chain_direction::chain_direction_backward)
-				{
-					// Increase the invalidation range tail
-					invalidate_range.end += invalidation_force_nearby_pages * 4096u;
-				}
-				if (invalidation_direction != invalidation_chain_direction::chain_direction_forward)
-				{
-					// Increase the invalidation range head
-					invalidate_range.start -= invalidation_force_nearby_pages * 4096u;
-				}
-			}
 
 			// Loop through cache and find pages that overlap the invalidate_range
 			u32 last_dirty_block = UINT32_MAX;
@@ -682,6 +682,7 @@ namespace rsx
 
 					if (
 						// RO sections during a read invalidation can be ignored (unless there are flushables in trampled_set, since those could overwrite RO data)
+						// TODO: Also exclude RO sections even if there are flushables
 						(invalidation_keep_ro_during_read && !trampled_set.has_flushables && !is_writing && tex.get_protection() == utils::protection::ro) ||
 						// Sections that are not fully contained in invalidate_range can be ignored
 						!tex.inside(trampled_set.invalidate_range, bounds) ||
@@ -1280,27 +1281,26 @@ namespace rsx
 				//1. Write memory to cpu side
 				for (auto &tex : data.sections_to_flush)
 				{
-					if (tex->is_locked())
+					verify(HERE), tex->is_locked();
+
+					if (tex->get_memory_read_flags() == rsx::memory_read_flags::flush_always)
 					{
-						if (tex->get_memory_read_flags() == rsx::memory_read_flags::flush_always)
+						// This region is set to always read from itself (unavoidable hard sync)
+						const auto ROP_timestamp = rsx::get_current_renderer()->ROP_sync_timestamp;
+						if (tex->is_synchronized() && ROP_timestamp > tex->get_sync_timestamp())
 						{
-							// This region is set to always read from itself (unavoidable hard sync)
-							const auto ROP_timestamp = rsx::get_current_renderer()->ROP_sync_timestamp;
-							if (tex->is_synchronized() && ROP_timestamp > tex->get_sync_timestamp())
-							{
-								m_num_cache_mispredictions++;
-								m_num_cache_misses++;
-								tex->copy_texture(true, std::forward<Args>(extras)...);
-							}
+							m_num_cache_mispredictions++;
+							m_num_cache_misses++;
+							tex->copy_texture(true, std::forward<Args>(extras)...);
 						}
-
-						if (!tex->flush(std::forward<Args>(extras)...))
-						{
-							record_cache_miss(*tex);
-						}
-
-						m_num_flush_requests++;
 					}
+
+					if (!tex->flush(std::forward<Args>(extras)...))
+					{
+						record_cache_miss(*tex);
+					}
+
+					m_num_flush_requests++;
 				}
 
 				//2. Release all obsolete sections

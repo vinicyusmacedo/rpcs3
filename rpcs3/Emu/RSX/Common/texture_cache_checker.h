@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "../rsx_utils.h"
 
@@ -181,11 +181,11 @@ namespace rsx {
 
 				if (must_be_empty && (
 						ptr->no > 0 ||
-						(!allow_ro && ptr->no > 0)
+						(!allow_ro && ptr->ro > 0)
 					))
 				{
 					const u32 addr = info_pointer_to_address(ptr);
-					fmt::throw_exception("Page at addr=0x%8x should not have any RW%s sections: Prot=%s, RO=%d, NA=%d", addr, allow_ro ? " or RO" : "", prot_to_str(prot), ptr->ro, ptr->no);
+					fmt::throw_exception("Page at addr=0x%8x should not have any NA%s sections: Prot=%s, RO=%d, NA=%d", addr, allow_ro ? " or RO" : "", prot_to_str(prot), ptr->ro, ptr->no);
 				}
 			}
 		}
