@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "Utilities/VirtualMemory.h"
 #include "Utilities/hash.h"
 #include "Emu/Memory/vm.h"
@@ -119,6 +119,7 @@ namespace rsx
 			if (new_prot == protection && !force) return;
 
 			verify(HERE), locked_range.is_page_range();
+			AUDIT( !confirmed_range.valid() || confirmed_range.inside(cpu_range) );
 
 #ifdef TEXTURE_CACHE_DEBUG
 			if (new_prot != protection || force)
@@ -198,6 +199,8 @@ namespace rsx
 #endif
 
 			protection = utils::protection::rw;
+			confirmed_range.invalidate();
+			super_ptr = {};
 			locked = false;
 		}
 

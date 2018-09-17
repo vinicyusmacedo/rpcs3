@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "../System.h"
 #include "Utilities/geometry.h"
@@ -205,6 +205,7 @@ namespace rsx
 	/**
 	  * Addresses and Address Ranges
 	  */
+	class address_range_vector;
 
 	constexpr inline u32 page_start(u32 addr)
 	{
@@ -308,6 +309,9 @@ namespace rsx
 			return range_inside_range(start, end, other.start, other.end);
 		}
 
+		inline bool inside(const address_range_vector &vec) const;
+		inline bool overlaps(const address_range_vector &vec) const;
+
 		inline bool touches(const address_range &other) const
 		{
 			AUDIT(valid() && other.valid());
@@ -376,6 +380,27 @@ namespace rsx
 			start = page_start(start);
 			end = page_end(end);
 			AUDIT(is_page_range());
+		}
+
+		inline address_range get_intersect(const address_range &clamp) const
+		{
+			if (!valid() || !clamp.valid())
+				return {};
+
+			return { std::max(start, clamp.start), std::min(end, clamp.end) };
+		}
+
+		inline void intersect(const address_range &clamp)
+		{
+			if (!clamp.valid())
+			{
+				invalidate();
+			}
+			else
+			{
+				start = std::max(start, clamp.start);
+				end = std::min(end, clamp.end);
+			}
 		}
 
 		// Validity
@@ -582,7 +607,64 @@ namespace rsx
 
 			return false;
 		}
+
+		// Test for overlap with a given address_range vector
+		bool overlaps(const address_range_vector &other) const
+		{
+			for (const address_range &rng1 : data)
+			{
+				if (!rng1.valid())
+					continue;
+
+				for (const address_range &rng2 : other.data)
+				{
+					if (!rng2.valid())
+						continue;
+
+					if (rng1.overlaps(rng2))
+						return true;
+				}
+			}
+			return false;
+		}
+
+		// Test if a given range is fully contained inside this vector
+		bool contains(const address_range &range) const
+		{
+			for (const address_range &cur : *this)
+			{
+				if (!cur.valid())
+					continue;
+
+				if (range.inside(cur))
+					return true;
+			}
+			return false;
+		}
+
+		bool inside(const address_range &range) const
+		{
+			for (const address_range &cur : *this)
+			{
+				if (!cur.valid())
+					continue;
+
+				if (!cur.inside(range))
+					return false;
+			}
+			return true;
+		}
 	};
+
+	bool address_range::inside(const address_range_vector &vec) const
+	{
+		return vec.contains(*this);
+	}
+
+	bool address_range::overlaps(const address_range_vector &vec) const
+	{
+		return vec.overlaps(*this);
+	}
 
 	// Acquire memory mirror with r/w permissions
 	weak_ptr get_super_ptr(address_range &range);

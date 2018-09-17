@@ -725,15 +725,6 @@ namespace gl
 		blitter m_hw_blitter;
 		std::vector<discardable_storage> m_temporary_surfaces;
 
-		cached_texture_section& create_texture(gl::viewable_image* image, const rsx::address_range &tex_range, u32 w, u32 h, u32 depth, u32 mipmaps)
-		{
-			cached_texture_section& tex = find_cached_texture(tex_range, true, w, h, depth);
-			tex.reset(tex_range);
-			tex.create_read_only(image, w, h, depth, mipmaps);
-			read_only_range = tex.get_min_max(read_only_range, rsx::section_bounds::locked_range);
-			return tex;
-		}
-
 		void clear()
 		{
 			superclass::clear();
@@ -946,12 +937,16 @@ namespace gl
 			const auto swizzle = get_component_mapping(gcm_format, flags);
 			image->set_native_component_layout(swizzle);
 
-			auto& cached = create_texture(image, rsx_range, width, height, depth, mipmaps);
-			cached.set_dirty(false);
+			auto& cached = find_cached_texture(rsx_range, true, width, width, depth);
+
+			cached.reset(rsx_range);
+			read_only_range = cached.get_min_max(read_only_range, rsx::section_bounds::locked_range);
 			cached.set_view_flags(flags);
 			cached.set_context(context);
 			cached.set_gcm_format(gcm_format);
 			cached.set_image_type(type);
+			cached.create_read_only(image, width, height, depth, mipmaps);
+			cached.set_dirty(false);
 
 			if (context != rsx::texture_upload_context::blit_engine_dst)
 			{
