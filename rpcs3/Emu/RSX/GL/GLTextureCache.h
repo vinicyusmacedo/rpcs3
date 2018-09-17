@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "stdafx.h"
 
@@ -255,10 +255,10 @@ namespace gl
 
 		void reset(const rsx::address_range &memory_range)
 		{
-			superclass::reset(memory_range);
-
 			vram_texture = nullptr;
 			managed_texture.reset();
+
+			superclass::reset(memory_range);
 		}
 
 		void create(u16 w, u16 h, u16 depth, u16 mipmaps, gl::texture* image, u32 rsx_pitch, bool read_only,
@@ -937,20 +937,23 @@ namespace gl
 			const auto swizzle = get_component_mapping(gcm_format, flags);
 			image->set_native_component_layout(swizzle);
 
-			auto& cached = find_cached_texture(rsx_range, true, width, width, depth);
+			auto& cached = *find_cached_texture(rsx_range, true, true, width, width, depth, mipmaps);
+			ASSERT(!cached.is_locked() && cached.is_dirty());
 
+			// Prepare section
 			cached.reset(rsx_range);
-			read_only_range = cached.get_min_max(read_only_range, rsx::section_bounds::locked_range);
 			cached.set_view_flags(flags);
 			cached.set_context(context);
-			cached.set_gcm_format(gcm_format);
 			cached.set_image_type(type);
+			cached.set_gcm_format(gcm_format);
+
 			cached.create_read_only(image, width, height, depth, mipmaps);
 			cached.set_dirty(false);
 
 			if (context != rsx::texture_upload_context::blit_engine_dst)
 			{
 				AUDIT( cached.get_memory_read_flags() != rsx::memory_read_flags::flush_always );
+				read_only_range = cached.get_min_max(read_only_range, rsx::section_bounds::locked_range); // TODO ruipin: This was outside the if, but is inside the if in Vulkan. Ask kd-11
 				cached.protect(utils::protection::ro);
 			}
 			else

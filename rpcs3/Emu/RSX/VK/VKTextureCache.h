@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "stdafx.h"
 #include "VKRenderTargets.h"
 #include "VKGSRender.h"
@@ -834,12 +834,17 @@ namespace vk
 
 			change_image_layout(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, { aspect_flags, 0, mipmaps, 0, layer });
 
-			cached_texture_section& region = find_cached_texture(rsx_range, true, width, height, section_depth, mipmaps);
+			cached_texture_section& region = *find_cached_texture(rsx_range, true, true, width, height, section_depth);
+			ASSERT(!region.is_locked() && region.is_dirty());
+
+			// New section, we must prepare it
 			region.reset(rsx_range);
 			region.set_context(context);
 			region.set_gcm_format(gcm_format);
 			region.set_image_type(type);
+
 			region.create(width, height, section_depth, mipmaps, image, 0, true, gcm_format);
+			region.set_dirty(false);
 
 			//Its not necessary to lock blit dst textures as they are just reused as necessary
 			if (context != rsx::texture_upload_context::blit_engine_dst)

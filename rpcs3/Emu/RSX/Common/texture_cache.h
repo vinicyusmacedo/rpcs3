@@ -434,7 +434,6 @@ namespace rsx
 					else
 						fmt::throw_exception("Unreachable" HERE);
 				}
-				AUDIT(data.fault_range.inside(ranges_to_unprotect));
 
 				// Exclude NA ranges from ranges_to_reprotect_ro
 				if (no_access_count > 0 && !ranges_to_protect_ro.empty())
@@ -621,7 +620,7 @@ namespace rsx
 			AUDIT( fault_range_in.valid() );
 			const address_range fault_range = fault_range_in.to_page_range();
 
-			auto trampled_set = get_intersecting_set(fault_range, is_writing, discard_only);
+			auto trampled_set = std::move(get_intersecting_set(fault_range, is_writing, discard_only));
 
 			thrashed_set result = {};
 			result.fault_range = fault_range;
@@ -939,7 +938,7 @@ namespace rsx
 			return nullptr;
 		}
 
-		section_storage_type& find_cached_texture(const address_range &range, bool confirm_dimensions = false, u16 width = 0, u16 height = 0, u16 depth = 0, u16 mipmaps = 0)
+		section_storage_type* find_cached_texture(const address_range &range, bool create_if_not_found, bool confirm_dimensions, u16 width = 0, u16 height = 0, u16 depth = 0, u16 mipmaps = 0)
 		{
 			auto &block = m_storage.block_for(range);
 
@@ -960,9 +959,9 @@ namespace rsx
 						if (!confirm_dimensions || tex.matches_dimensions(width, height, depth, mipmaps))
 						{
 #ifndef TEXTURE_CACHE_DEBUG
-							return tex;
+							return &tex;
 #else
-							verify(HERE), res == nullptr;
+							ASSERT(res == nullptr);
 							res = &tex;
 #endif
 						}
@@ -985,7 +984,7 @@ namespace rsx
 
 #ifdef TEXTURE_CACHE_DEBUG
 			if (res != nullptr)
-				return *res;
+				return res;
 #endif
 
 			if (mismatch != nullptr)
@@ -995,12 +994,15 @@ namespace rsx
 					range.start, width, tex.get_width(), height, tex.get_height(), depth, tex.get_depth(), mipmaps, tex.get_mipmaps());
 			}
 
+			if (!create_if_not_found)
+				return nullptr;
+
 			// If found, use the best fitting section
 			if (best_fit)
 			{
 				best_fit->destroy();
 
-				return *best_fit;
+				return best_fit;
 			}
 
 			// Return the first dirty section found, if any
@@ -1008,12 +1010,12 @@ namespace rsx
 			{
 				first_dirty->destroy();
 
-				return *first_dirty;
+				return first_dirty;
 			}
 
 			// Create and return a new section
 			update_cache_tag();
-			auto &tex = block.create_section();
+			auto tex = &block.create_section();
 			return tex;
 		}
 
@@ -1039,25 +1041,23 @@ namespace rsx
 
 			std::lock_guard lock(m_cache_mutex);
 
-			section_storage_type& region = find_cached_texture(rsx_range, false);
+			section_storage_type& region = *find_cached_texture(rsx_range, true, false);
 
-			if (region.get_context() != texture_upload_context::framebuffer_storage && region.exists())
+			if(region.get_context() != texture_upload_context::framebuffer_storage && region.exists())
 			{
-				// This code path assumes that the locked range matches the rsx_range exactly
-				// Such that we can call discard() without later forgetting to unprotect pages
-				AUDIT(!region.is_locked() || region.matches(rsx_range));
-
 				//This space was being used for other purposes other than framebuffer storage
 				//Delete used resources before attaching it to framebuffer memory
 				read_only_tex_invalidate = true;
 
-				// Discard and destroy
-				region.discard();
+				// We are going to reprotect this section in a second, so discard it here
+				if(region.is_locked())
+					region.discard();
+
+				// Destroy the resources
 				region.destroy();
-				AUDIT(!region.exists());
 			}
 
-			if (!region.exists())
+			if (!region.is_locked())
 			{
 				// New region, we must prepare it
 				region.reset(rsx_range);
@@ -1067,10 +1067,10 @@ namespace rsx
 			}
 			else
 			{
-				// Using an existing fbo region
-				AUDIT(region.matches(rsx_range, width, height, 1, 1));
-				AUDIT(region.get_context() == texture_upload_context::framebuffer_storage);
-				AUDIT(region.get_image_type() == rsx::texture_dimension_extended::texture_dimension_2d);
+				// Re-using locked fbo region
+				AUDIT(region.matches(rsx_range));
+				ASSERT(region.get_context() == texture_upload_context::framebuffer_storage);
+				ASSERT(region.get_image_type() == rsx::texture_dimension_extended::texture_dimension_2d);
 			}
 
 			region.create(width, height, 1, 1, image, pitch, false, std::forward<Args>(extras)...);
@@ -1105,6 +1105,7 @@ namespace rsx
 
 				// Memory is shared with another surface
 				// Discard it - the backend should ensure memory contents are preserved if needed
+				// TODO ruipin: This fails the protection checker. Refactor to use invalidate_range_impl_base
 				surface->set_dirty(true);
 
 				if (surface->is_locked())
@@ -1132,8 +1133,8 @@ namespace rsx
 						//       Exclude region to avoid having the region's locked_range unprotected for a split second
 						const auto &srfc_rng = surface->get_section_range();
 						LOG_TODO(RSX, "Valid region data may have been incorrectly unprotected (0x%x-0x%x)", srfc_rng.start, srfc_rng.end);
-						AUDIT(false);
-						surface->unprotect();
+						//AUDIT(false);
+						//surface->unprotect();
 					}
 				}
 			}
@@ -1153,12 +1154,16 @@ namespace rsx
 		{
 			std::lock_guard lock(m_cache_mutex);
 
-			section_storage_type& region = find_cached_texture(memory_range, false);
+			auto* region_ptr = find_cached_texture(memory_range, false, false);
+			if (region_ptr == nullptr)
+			{
+				AUDIT( m_flush_always_cache.find(memory_range.start) == m_flush_always_cache.end() );
+				LOG_ERROR(RSX, "set_memory_flags(0x%x, 0x%x, %d): region_ptr == nullptr");
+				return;
+			}
 
+			auto& region = *region_ptr;
 
-			// TODO ruipin: Restore this?
-			//if (!region.valid())
-			//	return;
 			if (region.is_dirty() || !region.exists() || region.get_context() != texture_upload_context::framebuffer_storage)
 			{
 #ifdef TEXTURE_CACHE_DEBUG
@@ -2459,7 +2464,10 @@ namespace rsx
 
 					for (const auto &It : m_flush_always_cache)
 					{
-						auto& section = find_cached_texture(address_range::create_start_length(It.first, It.second));
+						auto* section_ptr = find_cached_texture(address_range::create_start_length(It.first, It.second), false, false);
+						verify(HERE), section_ptr != nullptr;
+
+						auto& section = *section_ptr;
 						if (section.get_protection() != utils::protection::no)
 						{
 							verify(HERE), section.exists();

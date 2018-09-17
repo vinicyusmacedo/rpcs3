@@ -174,8 +174,8 @@ namespace rsx
 				}
 				else
 				{
-					AUDIT(!locked);
 					confirmed_range = address_range::create_start_length(cpu_range.start + new_confirm.first, new_confirm.second);
+					ASSERT(!locked || locked_range.inside(confirmed_range.to_page_range()));
 				}
 				
 				verify(HERE), confirmed_range.inside(cpu_range);
