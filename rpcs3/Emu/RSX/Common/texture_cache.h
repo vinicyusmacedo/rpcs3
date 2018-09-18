@@ -240,7 +240,7 @@ namespace rsx
 		bool read_only_tex_invalidate = false;
 
 		//Store of all objects in a flush_always state. A lazy readback is attempted every draw call
-		std::unordered_map<u32, u32> m_flush_always_cache;
+		std::unordered_map<address_range, section_storage_type*> m_flush_always_cache;
 		u64 m_flush_always_update_timestamp = 0;
 
 		//Memory usage
@@ -1156,7 +1156,7 @@ namespace rsx
 			auto* region_ptr = find_cached_texture(memory_range, false, false);
 			if (region_ptr == nullptr)
 			{
-				AUDIT( m_flush_always_cache.find(memory_range.start) == m_flush_always_cache.end() );
+				AUDIT( m_flush_always_cache.find(memory_range) == m_flush_always_cache.end() );
 				LOG_ERROR(RSX, "set_memory_flags(0x%x, 0x%x, %d): region_ptr == nullptr");
 				return;
 			}
@@ -1169,9 +1169,9 @@ namespace rsx
 				if (!region.is_dirty())
 				{
 					if (flags == memory_read_flags::flush_once)
-						verify(HERE), m_flush_always_cache.find(memory_range.start) == m_flush_always_cache.end();
+						verify(HERE), m_flush_always_cache.find(memory_range) == m_flush_always_cache.end();
 					else
-						verify(HERE), m_flush_always_cache[memory_range.start] == memory_range.length();
+						verify(HERE), m_flush_always_cache[memory_range] == &region;
 				}
 #endif // TEXTURE_CACHE_DEBUG
 				return;
@@ -1181,33 +1181,33 @@ namespace rsx
 			region.set_memory_read_flags(flags, false);
 		}
 
-		virtual void on_memory_read_flags_changed(const section_storage_type &section, rsx::memory_read_flags flags)
+		virtual void on_memory_read_flags_changed(section_storage_type &section, rsx::memory_read_flags flags)
 		{
 #ifdef TEXTURE_CACHE_DEBUG
 			const auto &memory_range = section.get_section_range();
 			if (flags == memory_read_flags::flush_once)
-				verify(HERE), m_flush_always_cache[memory_range.start] == memory_range.length();
+				verify(HERE), m_flush_always_cache[memory_range] == &section;
 			else
-				verify(HERE), m_flush_always_cache.find(memory_range.start) == m_flush_always_cache.end();
+				verify(HERE), m_flush_always_cache.find(memory_range) == m_flush_always_cache.end();
 #endif
 			update_flush_always_cache(section, flags == memory_read_flags::flush_always);
 		}
 
 	private:
-		inline void update_flush_always_cache(const section_storage_type &section, bool add)
+		inline void update_flush_always_cache(section_storage_type &section, bool add)
 		{
 			const address_range& range = section.get_section_range();
 			if (add)
 			{
 				// Add to m_flush_always_cache
-				AUDIT(m_flush_always_cache.find(range.start) == m_flush_always_cache.end());
-				m_flush_always_cache[range.start] = range.length();
+				AUDIT(m_flush_always_cache.find(range) == m_flush_always_cache.end());
+				m_flush_always_cache[range] = &section;
 			}
 			else
 			{
 				// Remove from m_flush_always_cache
-				AUDIT(m_flush_always_cache[range.start] == range.length());
-				m_flush_always_cache.erase(range.start);
+				AUDIT(m_flush_always_cache[range] == &section);
+				m_flush_always_cache.erase(range);
 			}
 		}
 
@@ -1369,7 +1369,7 @@ namespace rsx
 			if (value.misses >= m_cache_miss_threshold)
 			{
 				// Disable prediction if memory is flagged as flush_always
-				if (m_flush_always_cache.find(memory_range.start) == m_flush_always_cache.end())
+				if (m_flush_always_cache.find(memory_range) == m_flush_always_cache.end())
 				{
 					// TODO: Determine better way of setting threshold
 					// Allow all types
@@ -2462,10 +2462,7 @@ namespace rsx
 
 					for (const auto &It : m_flush_always_cache)
 					{
-						auto* section_ptr = find_cached_texture(address_range::create_start_length(It.first, It.second), false, false);
-						verify(HERE), section_ptr != nullptr;
-
-						auto& section = *section_ptr;
+						auto& section = *(It.second);
 						if (section.get_protection() != utils::protection::no)
 						{
 							verify(HERE), section.exists();
@@ -2473,7 +2470,7 @@ namespace rsx
 							AUDIT(section.get_memory_read_flags() == memory_read_flags::flush_always);
 
 							section.reprotect(utils::protection::no);
-							tag_framebuffer(It.first);
+							tag_framebuffer(section.get_section_base());
 							update_tag = true;
 						}
 					}
