@@ -1623,8 +1623,11 @@ void GLGSRender::flip(int buffer)
 
 bool GLGSRender::on_access_violation(u32 address, bool is_writing)
 {
-	bool can_flush = (std::this_thread::get_id() == m_thread_id);
-	auto result = m_gl_texture_cache.invalidate_address(address, is_writing, can_flush);
+	const bool can_flush = (std::this_thread::get_id() == m_thread_id);
+	const rsx::invalidation_cause cause =
+		is_writing ? (can_flush ? rsx::invalidation_cause::write : rsx::invalidation_cause::deferred_write)
+		           : (can_flush ? rsx::invalidation_cause::read  : rsx::invalidation_cause::deferred_read);
+	auto result = m_gl_texture_cache.invalidate_address(address, cause);
 
 	if (!result.violation_handled)
 		return false;
@@ -1650,7 +1653,10 @@ bool GLGSRender::on_access_violation(u32 address, bool is_writing)
 void GLGSRender::on_invalidate_memory_range(const rsx::address_range &range)
 {
 	//Discard all memory in that range without bothering with writeback (Force it for strict?)
-	if (m_gl_texture_cache.invalidate_range(range, true, true, false).violation_handled)
+	auto data = std::move(m_gl_texture_cache.invalidate_range(range, rsx::invalidation_cause::unmap));
+	AUDIT(data.empty());
+
+	if (data.violation_handled)
 	{
 		m_gl_texture_cache.purge_unreleased_sections();
 		{

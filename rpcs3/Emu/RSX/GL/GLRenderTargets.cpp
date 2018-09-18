@@ -1,4 +1,4 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include "../rsx_methods.h"
 #include "GLGSRender.h"
 #include "Emu/System.h"
@@ -463,7 +463,7 @@ void GLGSRender::read_buffers()
 					}
 					else
 					{
-						m_gl_texture_cache.invalidate_range(range, false, false, true);
+						m_gl_texture_cache.invalidate_range(range, rsx::invalidation_cause::read);
 
 						std::unique_ptr<u8[]> buffer(new u8[pitch * height]);
 						color_buffer.read(buffer.get(), width, height, pitch);

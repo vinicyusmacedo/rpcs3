@@ -17,7 +17,7 @@ namespace rsx
 		static_assert(std::is_base_of<rsx::cached_texture_section<section_storage_type>, section_storage_type>::value, "section_storage_type must derive from rsx::cached_texture_section");
 
 	public:
-		using superclass           = typename rsx::texture_cache_base<section_storage_type>;
+		using baseclass           = typename rsx::texture_cache_base<section_storage_type>;
 		using ranged_storage       = typename rsx::ranged_storage<section_storage_type>;
 		using ranged_storage_block = typename ranged_storage::block_type;
 
@@ -38,7 +38,7 @@ namespace rsx
 		struct thrashed_set
 		{
 			bool violation_handled = false;
-			bool is_writing = true;
+			invalidation_cause cause;
 			std::vector<section_storage_type*> sections_to_flush; // Sections to be flushed
 			std::vector<section_storage_type*> sections_to_unprotect; // These sections are to be unpotected and discarded by caller
 			std::vector<section_storage_type*> sections_to_exclude; // These sections are do be excluded from protection manipulation (subtracted from other sections)
@@ -46,7 +46,6 @@ namespace rsx
 			u64 cache_tag = 0;
 			address_range fault_range;
 			address_range invalidate_range;
-			bool exclude_fault_range = false; // Used to indicate that the fault range shouldn't be touched, e.g. it was unmapped
 
 			void clear_sections()
 			{
@@ -54,6 +53,11 @@ namespace rsx
 				sections_to_unprotect = {};
 				sections_to_exclude = {};
 				num_flushable = 0;
+			}
+
+			bool empty() const
+			{
+				return sections_to_flush.empty() && sections_to_unprotect.empty() && sections_to_exclude.empty();
 			}
 
 #ifdef TEXTURE_CACHE_DEBUG
@@ -64,7 +68,7 @@ namespace rsx
 
 				//-------------------------
 				// It is illegal to have only exclusions except when reading from a range with only RO sections
-				ASSERT(flush_and_unprotect_count > 0 || exclude_count == 0 || !is_writing);
+				ASSERT(flush_and_unprotect_count > 0 || exclude_count == 0 || !cause.is_write());
 				if (flush_and_unprotect_count == 0 && exclude_count > 0)
 				{
 					// double-check that only RO sections exists
@@ -77,8 +81,8 @@ namespace rsx
 				const auto min_overlap_fault_no_ro = tex_cache_checker.get_minimum_number_of_sections(fault_range);
 				const auto min_overlap_invalidate_no_ro = tex_cache_checker.get_minimum_number_of_sections(invalidate_range);
 
-				const u16 min_overlap_fault = min_overlap_fault_no_ro.first + (is_writing ? min_overlap_fault_no_ro.second : 0);
-				const u16 min_overlap_invalidate = min_overlap_invalidate_no_ro.first + (is_writing ? min_overlap_invalidate_no_ro.second : 0);
+				const u16 min_overlap_fault = min_overlap_fault_no_ro.first + (cause.is_write() ? min_overlap_fault_no_ro.second : 0);
+				const u16 min_overlap_invalidate = min_overlap_invalidate_no_ro.first + (cause.is_write() ? min_overlap_invalidate_no_ro.second : 0);
 				AUDIT(min_overlap_fault <= min_overlap_invalidate);
 
 				const u16 min_flush_or_unprotect = min_overlap_fault;
@@ -94,7 +98,7 @@ namespace rsx
 			{
 				//-------------------------
 				// Check that the number of sections we "found" matches the sections known to be in the fault range
-				tex_cache_checker.check_unprotected(fault_range, !is_writing && invalidation_keep_ro_during_read, true);
+				tex_cache_checker.check_unprotected(fault_range, cause.is_read() && invalidation_keep_ro_during_read, true);
 
 				// Check that the cache has the correct protections
 				tex_cache_checker.verify();
@@ -393,6 +397,9 @@ namespace rsx
 				}
 			};
 
+			// Sanity checks
+			AUDIT(data.fault_range.is_page_range());
+			AUDIT(data.invalidate_range.is_page_range());
 
 			// Merge ranges to unprotect
 			address_range_vector ranges_to_unprotect;
@@ -439,7 +446,7 @@ namespace rsx
 				{
 					for (auto &exclusion : data.sections_to_exclude)
 					{
-						if(exclusion->get_protection() != utils::protection::ro)
+						if (exclusion->get_protection() != utils::protection::ro)
 							ranges_to_protect_ro.exclude(exclusion->get_locked_range());
 					}
 				}
@@ -447,7 +454,7 @@ namespace rsx
 			AUDIT( !ranges_to_unprotect.empty() );
 
 			// Exclude the fault range if told to do so (this means the fault_range got unmapped or is otherwise invalid)
-			if (data.exclude_fault_range)
+			if (data.cause.exclude_fault_range())
 			{
 				ranges_to_unprotect.exclude(data.fault_range);
 				ranges_to_protect_ro.exclude(data.fault_range);
@@ -475,13 +482,14 @@ namespace rsx
 		}
 
 		// Return a set containing all sections that should be flushed/unprotected/reprotected
-		intersecting_set get_intersecting_set(const address_range &fault_range, bool is_writing, bool force_no_chain = false)
+		std::atomic<u64> m_last_section_cache_tag = 0;
+		intersecting_set get_intersecting_set(const address_range &fault_range, bool is_writing, bool force_no_chain)
 		{
 			(void)is_writing; // silence unused formal parameter warning; used only for debug purposes if TEXTURE_CACHE_DEBUG is defined
+
 			AUDIT( fault_range.is_page_range() );
 
-
-			const u64 cache_tag = get_system_time();
+			const u64 cache_tag = ++m_last_section_cache_tag;
 
 			intersecting_set result = {};
 			address_range &invalidate_range = result.invalidate_range;
@@ -591,7 +599,7 @@ namespace rsx
 			for (auto &section1 : result.sections)
 			{
 				size_t count = 0;
-				for(auto &section2 : result.sections)
+				for (auto &section2 : result.sections)
 				{
 					if (section1 == section2) count++;
 				}
@@ -611,32 +619,36 @@ namespace rsx
 
 		//Invalidate range base implementation
 		template <typename ...Args>
-		thrashed_set invalidate_range_impl_base(const address_range &fault_range_in, bool is_writing, bool discard_only, bool allow_flush, Args&&... extras)
+		thrashed_set invalidate_range_impl_base(const address_range &fault_range_in, invalidation_cause cause, Args&&... extras)
 		{
 #ifdef TEXTURE_CACHE_DEBUG
 			// Check that the cache has the correct protections
 			tex_cache_checker.verify();
 #endif // TEXTURE_CACHE_DEBUG
 
+			AUDIT( cause.valid() );
 			AUDIT( fault_range_in.valid() );
-			const address_range fault_range = fault_range_in.to_page_range();
+			address_range fault_range = fault_range_in.to_page_range();
 
-			auto trampled_set = std::move(get_intersecting_set(fault_range, is_writing, discard_only));
+			auto trampled_set = std::move(get_intersecting_set(fault_range, cause.is_write(), cause == invalidation_cause::unmap));
 
 			thrashed_set result = {};
+			result.cause = cause;
 			result.fault_range = fault_range;
 			result.invalidate_range = trampled_set.invalidate_range;
-			result.is_writing = is_writing;
 
-
-			if (discard_only && !trampled_set.sections.empty())
+			if (cause == invalidation_cause::unmap && !trampled_set.sections.empty())
 			{
 				// We discard all sections fully inside fault_range
 				for (auto &obj : trampled_set.sections)
 				{
 					auto &tex = *obj;
 					if (tex.inside(fault_range, section_bounds::locked_range))
+					{
+						// Discard and destroy - this section won't be needed any more
 						tex.discard();
+						tex.destroy();
+					}
 					else
 					{
 						if (tex.is_flushable())
@@ -655,24 +667,33 @@ namespace rsx
 #endif
 
 				// If invalidate_range is fault_range, we can stop now
-				if (trampled_set.invalidate_range == fault_range)
+				const address_range invalidate_range = trampled_set.invalidate_range;
+				if (invalidate_range == fault_range)
 				{
 					result.violation_handled = true;
+#ifdef TEXTURE_CACHE_DEBUG
+					// Post-check the result
+					result.check_post_sanity();
+#endif
 					return result;
 				}
-				AUDIT(!trampled_set.invalidate_range.inside(fault_range));
+				AUDIT(fault_range.inside(invalidate_range));
 
 				// There are textures that need to be invalidated, we now trigger another intersecting_set search on it
-				address_range invalidate_range = trampled_set.invalidate_range;
-				result.exclude_fault_range = true;
-				trampled_set = get_intersecting_set(invalidate_range, is_writing, false);
+				// "invalidate_range" contains the range of sections that overlaps the unmap boundary
+				// We set "fault_range = invalidate_range" to cause a forced invalidation over that whole range.
+				// and proceed as normal.
+				// NOTE: result.fault_range *must* stay the original fault_range otherwise everything breaks
+				fault_range = invalidate_range;
+				trampled_set = std::move(get_intersecting_set(fault_range, true, false));
+				result.invalidate_range = trampled_set.invalidate_range;
 			}
 
+
+			// Decide which sections to flush, unprotect, and exclude
 			if (!trampled_set.sections.empty())
 			{
 				update_cache_tag();
-
-				bool deferred_flush = !discard_only && !allow_flush;
 
 				for (auto &obj : trampled_set.sections)
 				{
@@ -683,7 +704,7 @@ namespace rsx
 					if (
 						// RO sections during a read invalidation can be ignored (unless there are flushables in trampled_set, since those could overwrite RO data)
 						// TODO: Also exclude RO sections even if there are flushables
-						(invalidation_keep_ro_during_read && !trampled_set.has_flushables && !is_writing && tex.get_protection() == utils::protection::ro) ||
+						(invalidation_keep_ro_during_read && !trampled_set.has_flushables && !cause.is_write() && tex.get_protection() == utils::protection::ro) ||
 						// Sections that are not fully contained in invalidate_range can be ignored
 						!tex.inside(trampled_set.invalidate_range, bounds) ||
 						// Unsynchronized sections that do not overlap the fault range directly can also be ignored
@@ -707,7 +728,7 @@ namespace rsx
 
 							result.sections_to_unprotect.push_back(&tex);
 						}
-						else if (!allow_flush)
+						else if (!cause.allow_flush())
 						{
 							result.sections_to_flush.push_back(&tex);
 						}
@@ -763,7 +784,7 @@ namespace rsx
 
 				result.num_flushable = static_cast<u32>(result.sections_to_flush.size());
 
-				if (deferred_flush && result.num_flushable > 0)
+				if (cause.is_deferred() && result.num_flushable > 0)
 				{
 					// There is something to flush, but we've been asked to defer it
 					result.num_flushable = static_cast<int>(result.sections_to_flush.size());
@@ -782,9 +803,7 @@ namespace rsx
 				else
 				{
 					// This is a read and all overlapping sections were RO and were excluded
-#ifdef TEXTURE_CACHE_DEBUG
-					ASSERT(!is_writing && !result.sections_to_exclude.empty());
-#endif // TEXTURE_CACHE_DEBUG
+					AUDIT(!cause.is_write() && !result.sections_to_exclude.empty());
 
 					// We did not handle this violation
 					result.clear_sections();
@@ -977,7 +996,7 @@ namespace rsx
 						best_fit = &tex;
 					}
 				}
-				else if(first_dirty == nullptr && tex.can_be_reused())
+				else if (first_dirty == nullptr && tex.can_be_reused())
 				{
 					first_dirty = &tex;
 				}
@@ -1044,14 +1063,14 @@ namespace rsx
 
 			section_storage_type& region = *find_cached_texture(rsx_range, true, false);
 
-			if(region.get_context() != texture_upload_context::framebuffer_storage && region.exists())
+			if (region.get_context() != texture_upload_context::framebuffer_storage && region.exists())
 			{
 				//This space was being used for other purposes other than framebuffer storage
 				//Delete used resources before attaching it to framebuffer memory
 				read_only_tex_invalidate = true;
 
 				// We are going to reprotect this section in a second, so discard it here
-				if(region.is_locked())
+				if (region.is_locked())
 					region.discard();
 
 				// Destroy the resources
@@ -1255,32 +1274,34 @@ namespace rsx
 		}
 
 		template <typename ...Args>
-		thrashed_set invalidate_address(u32 address, bool is_writing, bool allow_flush, Args&&... extras)
+		thrashed_set invalidate_address(u32 address, invalidation_cause cause, Args&&... extras)
 		{
 			//Test before trying to acquire the lock
 			const auto range = page_for(address);
-			if (!region_intersects_cache(range, is_writing))
+			if (!region_intersects_cache(range, cause.is_write()))
 				return{};
 
 			std::lock_guard lock(m_cache_mutex);
-			return invalidate_range_impl_base(range, is_writing, false, allow_flush, std::forward<Args>(extras)...);
+			return invalidate_range_impl_base(range, cause, std::forward<Args>(extras)...);
 		}
 
 		template <typename ...Args>
-		thrashed_set invalidate_range(const address_range &range, bool is_writing, bool discard, bool allow_flush, Args&&... extras)
+		thrashed_set invalidate_range(const address_range &range, invalidation_cause cause, Args&&... extras)
 		{
 			//Test before trying to acquire the lock
-			if (!region_intersects_cache(range, is_writing))
+			if (!region_intersects_cache(range, cause.is_write()))
 				return {};
 
 			std::lock_guard lock(m_cache_mutex);
-			return invalidate_range_impl_base(range, is_writing, discard, allow_flush, std::forward<Args>(extras)...);
+			return invalidate_range_impl_base(range, cause, std::forward<Args>(extras)...);
 		}
 
 		template <typename ...Args>
 		bool flush_all(thrashed_set& data, Args&&... extras)
 		{
 			std::lock_guard lock(m_cache_mutex);
+
+			AUDIT(data.cause.is_deferred());
 
 			if (m_cache_update_tag.load(std::memory_order_consume) == data.cache_tag)
 			{
@@ -1315,7 +1336,7 @@ namespace rsx
 			else
 			{
 				// The cache contents have changed between the two readings. This means the data held is useless
-				invalidate_range_impl_base(data.fault_range, true, false, true, std::forward<Args>(extras)...);
+				invalidate_range_impl_base(data.fault_range, data.cause.undefer(), std::forward<Args>(extras)...);
 			}
 
 			return true;
@@ -1775,7 +1796,7 @@ namespace rsx
 					else
 					{
 						m_rtts.invalidate_surface_address(texaddr, false);
-						invalidate_address(texaddr, false, true, std::forward<Args>(extras)...);
+						invalidate_address(texaddr, invalidation_cause::read, std::forward<Args>(extras)...);
 					}
 				}
 
@@ -1790,7 +1811,7 @@ namespace rsx
 					else
 					{
 						m_rtts.invalidate_surface_address(texaddr, true);
-						invalidate_address(texaddr, false, true, std::forward<Args>(extras)...);
+						invalidate_address(texaddr, invalidation_cause::read, std::forward<Args>(extras)...);
 					}
 				}
 			}
@@ -1812,7 +1833,7 @@ namespace rsx
 					if (!test_framebuffer(rsc.base_address))
 					{
 						m_rtts.invalidate_surface_address(rsc.base_address, rsc.is_depth_surface);
-						invalidate_address(rsc.base_address, false, true, std::forward<Args>(extras)...);
+						invalidate_address(rsc.base_address, invalidation_cause::read, std::forward<Args>(extras)...);
 					}
 					else if (extended_dimension != rsx::texture_dimension_extended::texture_dimension_2d &&
 							 extended_dimension != rsx::texture_dimension_extended::texture_dimension_1d)
@@ -1928,8 +1949,8 @@ namespace rsx
 				// Upgrade lock
 				lock.upgrade();
 
-				//Invalidate with writing=false, discard=false, rebuild=false, native_flush=true
-				invalidate_range_impl_base(tex_range, false, false, true, std::forward<Args>(extras)...);
+				//Invalidate
+				invalidate_range_impl_base(tex_range, invalidation_cause::read, std::forward<Args>(extras)...);
 
 				//NOTE: SRGB correction is to be handled in the fragment shader; upload as linear RGB
 				return{ upload_image_from_cpu(cmd, texaddr, tex_width, tex_height, depth, tex.get_exact_mipmap_count(), tex_pitch, format,
@@ -1999,14 +2020,14 @@ namespace rsx
 			if (src_is_render_target && !test_framebuffer(src_subres.base_address))
 			{
 				m_rtts.invalidate_surface_address(src_subres.base_address, src_subres.is_depth_surface);
-				invalidate_address(src_subres.base_address, false, true, std::forward<Args>(extras)...);
+				invalidate_address(src_subres.base_address, invalidation_cause::read, std::forward<Args>(extras)...);
 				src_is_render_target = false;
 			}
 
 			if (dst_is_render_target && !test_framebuffer(dst_subres.base_address))
 			{
 				m_rtts.invalidate_surface_address(dst_subres.base_address, dst_subres.is_depth_surface);
-				invalidate_address(dst_subres.base_address, false, true, std::forward<Args>(extras)...);
+				invalidate_address(dst_subres.base_address, invalidation_cause::read, std::forward<Args>(extras)...);
 				dst_is_render_target = false;
 			}
 
@@ -2072,8 +2093,8 @@ namespace rsx
 					const u32 memcpy_bytes_length = dst.clip_width * bpp * dst.clip_height;
 
 					lock.upgrade();
-					invalidate_range_impl_base(address_range::create_start_length(src_address, memcpy_bytes_length), false, false, true, std::forward<Args>(extras)...);
-					invalidate_range_impl_base(address_range::create_start_length(dst_address, memcpy_bytes_length), true, false, true, std::forward<Args>(extras)...);
+					invalidate_range_impl_base(address_range::create_start_length(src_address, memcpy_bytes_length), invalidation_cause::read, std::forward<Args>(extras)...);
+					invalidate_range_impl_base(address_range::create_start_length(dst_address, memcpy_bytes_length), invalidation_cause::write, std::forward<Args>(extras)...);
 					memcpy(dst.pixels, src.pixels, memcpy_bytes_length);
 					return true;
 				}
@@ -2211,7 +2232,7 @@ namespace rsx
 				{
 					lock.upgrade();
 
-					invalidate_range_impl_base(address_range::create_start_length(src_address, src.pitch * src.slice_h), false, false, true, std::forward<Args>(extras)...);
+					invalidate_range_impl_base(address_range::create_start_length(src_address, src.pitch * src.slice_h), invalidation_cause::read, std::forward<Args>(extras)...);
 
 					const u16 pitch_in_block = src_is_argb8 ? src.pitch >> 2 : src.pitch >> 1;
 					std::vector<rsx_subresource_layout> subresource_layout;
@@ -2302,7 +2323,7 @@ namespace rsx
 				const address_range &cached_range = cached_dest->get_section_range();
 				const address_range inv_range = invalidate_dst_range ? dst_range.get_min_max(cached_range) : cached_range;
 
-				invalidate_range_impl_base(inv_range, true, false, true, std::forward<Args>(extras)...);
+				invalidate_range_impl_base(inv_range, invalidation_cause::write, std::forward<Args>(extras)...);
 				AUDIT(!cached_dest->is_locked());
 
 				dest_texture = 0;
@@ -2311,7 +2332,7 @@ namespace rsx
 			else if (invalidate_dst_range)
 			{
 				lock.upgrade();
-				invalidate_range_impl_base(dst_range, true, false, true, std::forward<Args>(extras)...);
+				invalidate_range_impl_base(dst_range, invalidation_cause::write, std::forward<Args>(extras)...);
 			}
 
 			u32 gcm_format;

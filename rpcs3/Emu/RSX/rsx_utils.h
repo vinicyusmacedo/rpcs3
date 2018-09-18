@@ -268,42 +268,42 @@ namespace rsx
 		}
 
 		// Length
-		inline u32 length() const
+		u32 length() const
 		{
 			AUDIT(valid());
 			return end - start + 1;
 		}
 
-		inline void set_length(const u32 new_length)
+		void set_length(const u32 new_length)
 		{
 			end = start + new_length - 1;
 			AUDIT(valid());
 		}
 
-		inline u32 next_address() const
+		u32 next_address() const
 		{
 			return end + 1;
 		}
 
-		inline u32 prev_address() const
+		u32 prev_address() const
 		{
 			return start - 1;
 		}
 
 		// Overlapping checks
-		inline bool overlaps(const address_range &other) const
+		bool overlaps(const address_range &other) const
 		{
 			AUDIT(valid() && other.valid());
 			return range_overlaps(start, end, other.start, other.end);
 		}
 
-		inline bool overlaps(const u32 addr) const
+		bool overlaps(const u32 addr) const
 		{
 			AUDIT(valid());
 			return address_overlaps(addr, start, end);
 		}
 
-		inline bool inside(const address_range &other) const
+		bool inside(const address_range &other) const
 		{
 			AUDIT(valid() && other.valid());
 			return range_inside_range(start, end, other.start, other.end);
@@ -312,14 +312,14 @@ namespace rsx
 		inline bool inside(const address_range_vector &vec) const;
 		inline bool overlaps(const address_range_vector &vec) const;
 
-		inline bool touches(const address_range &other) const
+		bool touches(const address_range &other) const
 		{
 			AUDIT(valid() && other.valid());
 			// returns true if there is overlap, or if sections are side-by-side
 			return overlaps(other) || other.start == next_address() || other.end == prev_address();
 		}
 
-		inline s32 signed_distance(const address_range &other) const
+		s32 signed_distance(const address_range &other) const
 		{
 			if (touches(other))
 				return 0;
@@ -333,7 +333,7 @@ namespace rsx
 			return -((s32)(start - other.end - 1));
 		}
 
-		inline u32 distance(const address_range &other) const
+		u32 distance(const address_range &other) const
 		{
 			if (touches(other))
 				return 0;
@@ -348,7 +348,7 @@ namespace rsx
 		}
 
 		// Utilities
-		inline address_range get_min_max(const address_range &other) const
+		address_range get_min_max(const address_range &other) const
 		{
 			return {
 				std::min(valid() ? start : UINT32_MAX, other.valid() ? other.start : UINT32_MAX),
@@ -363,18 +363,18 @@ namespace rsx
 			end = _range.end;
 		}
 
-		inline bool is_page_range() const
+		bool is_page_range() const
 		{
 			return (valid() && start % 4096u == 0 && length() % 4096u == 0);
 		}
 
-		inline address_range to_page_range() const
+		address_range to_page_range() const
 		{
 			AUDIT(valid());
 			return { page_start(start), page_end(end) };
 		}
 
-		inline void page_align()
+		void page_align()
 		{
 			AUDIT(valid());
 			start = page_start(start);
@@ -382,7 +382,7 @@ namespace rsx
 			AUDIT(is_page_range());
 		}
 
-		inline address_range get_intersect(const address_range &clamp) const
+		address_range get_intersect(const address_range &clamp) const
 		{
 			if (!valid() || !clamp.valid())
 				return {};
@@ -390,7 +390,7 @@ namespace rsx
 			return { std::max(start, clamp.start), std::min(end, clamp.end) };
 		}
 
-		inline void intersect(const address_range &clamp)
+		void intersect(const address_range &clamp)
 		{
 			if (!clamp.valid())
 			{
@@ -404,24 +404,24 @@ namespace rsx
 		}
 
 		// Validity
-		inline bool valid() const
+		bool valid() const
 		{
 			return (start <= end);
 		}
 
-		inline void invalidate()
+		void invalidate()
 		{
 			start = UINT32_MAX;
 			end = 0;
 		}
 
 		// Comparison Operators
-		inline bool operator ==(const address_range &other) const
+		bool operator ==(const address_range &other) const
 		{
 			return (start == other.start && end == other.end);
 		}
 
-		inline bool operator !=(const address_range &other) const
+		bool operator !=(const address_range &other) const
 		{
 			return (start != other.start || end != other.end);
 		}
@@ -429,7 +429,7 @@ namespace rsx
 		/**
 		 * Debug
 		 */
-		inline std::string str() const
+		std::string str() const
 		{
 			return fmt::format("{0x%x->0x%x}", start, end);
 		}
@@ -512,6 +512,8 @@ namespace rsx
 				*invalid = new_range;
 			else
 				data.push_back(new_range);
+
+			AUDIT(check_consistency());
 		}
 
 		void merge(const address_range_vector &other)
@@ -571,23 +573,27 @@ namespace rsx
 				else
 				{
 					AUDIT( exclusion.inside(existing) );
+					const auto tail_end = existing.end;
+
+					// Head
+					existing.end = exclusion.prev_address();
 
 					// Tail
 					if (invalid != nullptr)
 					{
 						invalid->start = exclusion.next_address();
-						invalid->end = existing.end;
+						invalid->end = tail_end;
 						invalid = nullptr;
 					}
 					else
 					{
-						data.push_back(address_range::create_start_end(exclusion.next_address(), existing.end));
+						// IMPORTANT: inserting into data invalidates "existing". This must be done last!
+						data.push_back(address_range::create_start_end(exclusion.next_address(), tail_end));
 					}
-
-					// Head
-					existing.end = exclusion.prev_address();
 				}
 			}
+			AUDIT(check_consistency());
+			AUDIT(!overlaps(exclusion));
 		}
 
 		void exclude(const address_range_vector &other)
@@ -596,11 +602,39 @@ namespace rsx
 				exclude(exclusion);
 		}
 
+		// Checks the consistency of this vector.
+		// Will fail if ranges within the vector overlap our touch each-other
+		bool check_consistency() const
+		{
+			size_t _size = data.size();
+
+			for (int i = 0; i < _size; ++i)
+			{
+				const auto &r1 = data[i];
+				if (!r1.valid())
+					continue;
+
+				for (int j = i+1; j < _size; ++j)
+				{
+					const auto &r2 = data[j];
+					if (!r2.valid())
+						continue;
+
+					if (r1.touches(r2))
+						return false;
+				}
+			}
+			return true;
+		}
+
 		// Test for overlap with a given range
 		bool overlaps(const address_range &range) const
 		{
 			for (const address_range &current : data)
 			{
+				if (!current.valid())
+					continue;
+
 				if (current.overlaps(range))
 					return true;
 			}
@@ -697,12 +731,7 @@ namespace rsx
 			:address(address_), pitch(pitch_), is_depth_surface(is_depth_), color_format(fmt_), depth_format(dfmt_), width(w), height(h)
 		{}
 
-		inline address_range get_memory_range() const
-		{
-			return address_range::create_start_length(address, pitch * height);
-		}
-
-		inline address_range get_memory_range(u32 aa_factor) const
+		address_range get_memory_range(u32 aa_factor = 1) const
 		{
 			return address_range::create_start_length(address, pitch * height * aa_factor);
 		}

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stack>
 #include <deque>
@@ -347,7 +347,7 @@ namespace rsx
 		std::shared_ptr<rsx::overlays::display_manager> m_overlay_manager;
 
 		// Invalidated memory range
-		address_range_vector m_invalidated_memory_ranges;
+		address_range m_invalidated_memory_range;
 
 	public:
 		RsxDmaControl* ctrl = nullptr;
@@ -468,7 +468,7 @@ namespace rsx
 		thread();
 		virtual ~thread();
 
-		void handle_invalidated_memory_ranges();
+		void handle_invalidated_memory_range();
 
 		virtual void on_task() override;
 		virtual void on_exit() override;
