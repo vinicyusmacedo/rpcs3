@@ -477,7 +477,9 @@ namespace rsx
 		// Return a set containing all sections that should be flushed/unprotected/reprotected
 		intersecting_set get_intersecting_set(const address_range &fault_range, bool is_writing, bool force_no_chain = false)
 		{
+			(void)is_writing; // silence unused formal parameter warning; used only for debug purposes if TEXTURE_CACHE_DEBUG is defined
 			AUDIT( fault_range.is_page_range() );
+
 
 			const u64 cache_tag = get_system_time();
 
