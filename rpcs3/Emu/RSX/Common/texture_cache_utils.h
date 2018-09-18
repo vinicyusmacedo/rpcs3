@@ -248,7 +248,7 @@ namespace rsx
 	{
 	public:
 		virtual void on_memory_read_flags_changed(section_storage_type &section, rsx::memory_read_flags flags) = 0;
-		virtual void on_section_destroyed(section_storage_type &section) {};
+		virtual void on_section_destroyed(section_storage_type & /*section*/) {};
 	};
 
 
@@ -350,7 +350,7 @@ namespace rsx
 			return res;
 		}
 
-		inline void clear(bool notify_storage = true)
+		inline void clear()
 		{
 			for (auto &section : *this)
 				section.destroy();
@@ -420,12 +420,14 @@ namespace rsx
 
 		inline void on_section_resources_created(const section_storage_type &section)
 		{
+			(void)section; // silence unused warning without _AUDIT
 			AUDIT(section.exists());
 			exists_count++;
 		}
 
 		inline void on_section_resources_destroyed(const section_storage_type &section)
 		{
+			(void)section; // silence unused warning without _AUDIT
 			AUDIT(!section.exists());
 			verify(HERE), exists_count > 0;
 			exists_count--;
@@ -548,7 +550,7 @@ namespace rsx
 		void clear()
 		{
 			for (auto &block : *this)
-				block.clear(false);
+				block.clear();
 
 			m_in_use.clear();
 
@@ -588,12 +590,12 @@ namespace rsx
 		/**
 		 * Callbacks
 		 */
-		void on_section_released(const section_storage_type &section)
+		void on_section_released(const section_storage_type &/*section*/)
 		{
 			verify(HERE), m_unreleased_texture_objects-- > 0;
 		}
 
-		void on_section_unreleased(const section_storage_type &section)
+		void on_section_unreleased(const section_storage_type &/*section*/)
 		{
 			m_unreleased_texture_objects++;
 		}
