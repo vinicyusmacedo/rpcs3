@@ -30,7 +30,6 @@ namespace rsx
 		struct framebuffer_memory_characteristics
 		{
 			u32 misses;
-			u32 block_size;
 			texture_format format;
 		};
 
@@ -232,7 +231,7 @@ namespace rsx
 		address_range read_only_range;
 		address_range no_access_range;
 
-		std::unordered_map<u32, framebuffer_memory_characteristics> m_cache_miss_statistics_table;
+		std::unordered_map<address_range, framebuffer_memory_characteristics> m_cache_miss_statistics_table;
 
 		//Map of messages to only emit once
 		std::unordered_set<std::string> m_once_only_messages_set;
@@ -1324,21 +1323,20 @@ namespace rsx
 		{
 			m_num_cache_misses++;
 
-			const u32 memory_address = tex.get_section_base();
-			const u32 memory_size = tex.get_section_size();
+			const auto& memory_range = tex.get_section_range();
 			const auto fmt = tex.get_format();
 
-			auto It = m_cache_miss_statistics_table.find(memory_address);
+			auto It = m_cache_miss_statistics_table.find(memory_range);
 			if (It == m_cache_miss_statistics_table.end())
 			{
-				m_cache_miss_statistics_table[memory_address] = { 1, memory_size, fmt };
+				m_cache_miss_statistics_table[memory_range] = { 1, fmt };
 				return;
 			}
 
 			auto &value = It->second;
-			if (value.format != fmt || value.block_size != memory_size)
+			if (value.format != fmt)
 			{
-				m_cache_miss_statistics_table[memory_address] = { 1, memory_size, fmt };
+				value = { 1, fmt };
 				return;
 			}
 
@@ -1348,20 +1346,20 @@ namespace rsx
 		template <typename ...Args>
 		bool flush_if_cache_miss_likely(texture_format fmt, const address_range &memory_range, Args&&... extras)
 		{
-			auto It = m_cache_miss_statistics_table.find(memory_range.start);
+			auto It = m_cache_miss_statistics_table.find(memory_range);
 			if (It == m_cache_miss_statistics_table.end())
 			{
-				m_cache_miss_statistics_table[memory_range.start] = { 0, memory_range.length(), fmt };
+				m_cache_miss_statistics_table[memory_range] = { 0, fmt };
 				return false;
 			}
 
 			auto &value = It->second;
 
-			if (value.format != fmt || value.block_size < memory_range.length())
+			if (value.format != fmt)
 			{
 				//Reset since the data has changed
 				//TODO: Keep track of all this information together
-				m_cache_miss_statistics_table[memory_range.start] = { 0, memory_range.length(), fmt };
+				value = { 0, fmt };
 			}
 
 			// By default, blit targets are always to be tested for readback

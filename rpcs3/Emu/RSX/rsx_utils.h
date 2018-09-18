@@ -1244,3 +1244,19 @@ namespace rsx
 		}
 	}
 }
+
+
+namespace std {
+
+	static_assert(sizeof(size_t) >= 2 * sizeof(u32), "size_t must be at least twice the size of u32");
+	template <>
+	struct hash<rsx::address_range>
+	{
+		std::size_t operator()(const rsx::address_range& k) const
+		{
+			// we can guarantee a unique hash since our type is 64 bits and size_t as well
+			return (size_t{ k.start } << 32) | size_t{ k.end };
+		}
+	};
+
+}
