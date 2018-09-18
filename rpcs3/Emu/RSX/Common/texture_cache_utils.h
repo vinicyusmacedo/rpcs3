@@ -247,7 +247,7 @@ namespace rsx
 	class texture_cache_base
 	{
 	public:
-		virtual void on_memory_read_flags_changed(const section_storage_type &section, rsx::memory_read_flags flags) = 0;
+		virtual void on_memory_read_flags_changed(section_storage_type &section, rsx::memory_read_flags flags) = 0;
 		virtual void on_section_destroyed(section_storage_type &section) {};
 	};
 
