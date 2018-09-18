@@ -15,7 +15,7 @@ namespace vk
 {
 	class cached_texture_section : public rsx::cached_texture_section<vk::cached_texture_section>
 	{
-		using superclass = typename rsx::cached_texture_section<vk::cached_texture_section>;
+		using baseclass = typename rsx::cached_texture_section<vk::cached_texture_section>;
 
 		std::unique_ptr<vk::viewable_image> managed_texture = nullptr;
 
@@ -26,14 +26,14 @@ namespace vk
 		std::unique_ptr<vk::buffer> dma_buffer;
 
 	public:
-		using superclass::cached_texture_section;
+		using baseclass::cached_texture_section;
 
 		void reset(const rsx::address_range &memory_range)
 		{
 			if (memory_range.length() > get_section_size())
 				release_dma_resources();
 
-			superclass::reset(memory_range);
+			baseclass::reset(memory_range);
 		}
 
 		void create(u16 w, u16 h, u16 depth, u16 mipmaps, vk::image *image, u32 rsx_pitch, bool managed, u32 gcm_format, bool pack_swap_bytes = false)
@@ -65,8 +65,8 @@ namespace vk
 			flushed = false;
 			sync_timestamp = 0ull;
 
-			// Notify superclass
-			superclass::on_section_resources_created();
+			// Notify baseclass
+			baseclass::on_section_resources_created();
 		}
 
 		void release_dma_resources()
@@ -89,7 +89,7 @@ namespace vk
 			vram_texture = nullptr;
 			release_dma_resources();
 
-			superclass::on_section_resources_destroyed();
+			baseclass::on_section_resources_destroyed();
 		}
 
 		inline bool exists() const
@@ -421,7 +421,7 @@ namespace vk
 		}
 
 	private:
-		using superclass = rsx::texture_cache<vk::command_buffer, vk::cached_texture_section, vk::image*, vk::image_view*, vk::image, VkFormat>;
+		using baseclass = rsx::texture_cache<vk::command_buffer, vk::cached_texture_section, vk::image*, vk::image_view*, vk::image, VkFormat>;
 
 		//Vulkan internals
 		vk::render_device* m_device;
@@ -436,7 +436,7 @@ namespace vk
 
 		void clear()
 		{
-			superclass::clear();
+			baseclass::clear();
 
 			m_discardable_storage.clear();
 			m_discarded_memory_size = 0;
@@ -835,7 +835,7 @@ namespace vk
 			change_image_layout(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, { aspect_flags, 0, mipmaps, 0, layer });
 
 			cached_texture_section& region = *find_cached_texture(rsx_range, true, true, width, height, section_depth);
-			ASSERT(!region.is_locked() && region.is_dirty());
+			ASSERT(!region.is_locked());
 
 			// New section, we must prepare it
 			region.reset(rsx_range);
@@ -952,7 +952,7 @@ namespace vk
 		}
 
 	public:
-		using superclass::texture_cache;
+		using baseclass::texture_cache;
 
 		void initialize(vk::render_device& device, VkQueue submit_queue, vk::vk_data_heap& upload_heap)
 		{

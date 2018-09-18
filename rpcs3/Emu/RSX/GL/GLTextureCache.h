@@ -143,7 +143,7 @@ namespace gl
 
 	class cached_texture_section : public rsx::cached_texture_section<gl::cached_texture_section>
 	{
-		using superclass = rsx::cached_texture_section<gl::cached_texture_section>;
+		using baseclass = rsx::cached_texture_section<gl::cached_texture_section>;
 
 	private:
 		fence m_fence;
@@ -251,14 +251,14 @@ namespace gl
 		}
 
 	public:
-		using superclass::cached_texture_section;
+		using baseclass::cached_texture_section;
 
 		void reset(const rsx::address_range &memory_range)
 		{
 			vram_texture = nullptr;
 			managed_texture.reset();
 
-			superclass::reset(memory_range);
+			baseclass::reset(memory_range);
 		}
 
 		void create(u16 w, u16 h, u16 depth, u16 mipmaps, gl::texture* image, u32 rsx_pitch, bool read_only,
@@ -296,8 +296,8 @@ namespace gl
 
 			set_format(gl_format, gl_type, swap_bytes);
 
-			// Notify superclass
-			superclass::on_section_resources_created();
+			// Notify baseclass
+			baseclass::on_section_resources_created();
 		}
 
 		void create_read_only(gl::viewable_image* image, u32 width, u32 height, u32 depth, u32 mipmaps)
@@ -314,8 +314,8 @@ namespace gl
 			rsx_pitch = 0;
 			real_pitch = 0;
 
-			// Notify superclass
-			superclass::on_section_resources_created();
+			// Notify baseclass
+			baseclass::on_section_resources_created();
 		}
 
 		void make_flushable()
@@ -622,7 +622,7 @@ namespace gl
 			if (!m_fence.is_empty())
 				m_fence.destroy();
 
-			superclass::on_section_resources_destroyed();
+			baseclass::on_section_resources_destroyed();
 		}
 
 		inline bool exists() const
@@ -693,7 +693,7 @@ namespace gl
 	class texture_cache : public rsx::texture_cache<void*, gl::cached_texture_section, gl::texture*, gl::texture_view*, gl::texture, gl::texture::format>
 	{
 	private:
-		using superclass = rsx::texture_cache<void*, gl::cached_texture_section, gl::texture*, gl::texture_view*, gl::texture, gl::texture::format>;
+		using baseclass = rsx::texture_cache<void*, gl::cached_texture_section, gl::texture*, gl::texture_view*, gl::texture, gl::texture::format>;
 
 		struct discardable_storage
 		{
@@ -727,7 +727,7 @@ namespace gl
 
 		void clear()
 		{
-			superclass::clear();
+			baseclass::clear();
 			clear_temporary_subresources();
 		}
 
@@ -938,7 +938,7 @@ namespace gl
 			image->set_native_component_layout(swizzle);
 
 			auto& cached = *find_cached_texture(rsx_range, true, true, width, width, depth, mipmaps);
-			ASSERT(!cached.is_locked() && cached.is_dirty());
+			ASSERT(!cached.is_locked());
 
 			// Prepare section
 			cached.reset(rsx_range);
@@ -1071,7 +1071,7 @@ namespace gl
 
 	public:
 
-		using superclass::texture_cache;
+		using baseclass::texture_cache;
 
 		void initialize()
 		{

@@ -812,7 +812,9 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 	vk::texture_cache::thrashed_set result;
 	{
 		std::lock_guard lock(m_secondary_cb_guard);
-		result = std::move(m_texture_cache.invalidate_address(address, is_writing, false, m_secondary_command_buffer, m_swapchain->get_graphics_queue()));
+
+		const rsx::invalidation_cause cause = is_writing ? rsx::invalidation_cause::deferred_write : rsx::invalidation_cause::deferred_read;
+		result = std::move(m_texture_cache.invalidate_address(address, cause, m_secondary_command_buffer, m_swapchain->get_graphics_queue()));
 	}
 
 	if (!result.violation_handled)
@@ -896,8 +898,11 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 void VKGSRender::on_invalidate_memory_range(const rsx::address_range &range)
 {
 	std::lock_guard lock(m_secondary_cb_guard);
-	if (m_texture_cache.invalidate_range(range, true, true, false,
-		m_secondary_command_buffer, m_swapchain->get_graphics_queue()).violation_handled)
+
+	auto data = std::move(m_texture_cache.invalidate_range(range, rsx::invalidation_cause::unmap, m_secondary_command_buffer, m_swapchain->get_graphics_queue()));
+	AUDIT(data.empty());
+
+	if (data.violation_handled)
 	{
 		m_texture_cache.purge_unreleased_sections();
 		{

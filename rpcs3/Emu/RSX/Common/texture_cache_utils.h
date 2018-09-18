@@ -40,6 +40,66 @@ namespace rsx
 		flush_once = 1
 	};
 
+	struct invalidation_cause {
+		enum enum_type {
+			invalid = 0,
+			read,
+			deferred_read,
+			write,
+			deferred_write,
+			unmap
+		} cause;
+
+		bool valid() const
+		{
+			return cause != invalid;
+		}
+
+		bool is_read() const
+		{
+			AUDIT(valid());
+			return (cause == read || cause == deferred_read);
+		}
+
+		bool is_write() const
+		{
+			AUDIT(valid());
+			return (cause == write || cause == deferred_write || cause == unmap);
+		}
+
+		bool is_deferred() const
+		{
+			AUDIT(valid());
+			return (cause == deferred_read || cause == deferred_write);
+		}
+
+		bool allow_flush() const
+		{
+			return (cause == read || cause == write || cause == unmap);
+		}
+
+		bool exclude_fault_range() const
+		{
+			return (cause == unmap);
+		}
+
+		invalidation_cause undefer() const
+		{
+			AUDIT(is_deferred());
+			if (is_read())
+				return read;
+			else if (is_write())
+				return write;
+			else
+				fmt::throw_exception("Unreachable " HERE);
+		}
+
+		invalidation_cause() : cause(invalid) {}
+		invalidation_cause(enum_type _cause) : cause(_cause) {}
+		operator enum_type&() { return cause; }
+		operator enum_type() const { return cause; }
+	};
+
 	struct typeless_xfer
 	{
 		bool src_is_typeless = false;
@@ -133,8 +193,6 @@ namespace rsx
 					array_idx = 0;
 					list_it++;
 				}
-
-				AUDIT( (*this)->valid() );
 			}
 
 		public:
@@ -176,8 +234,8 @@ namespace rsx
 		{}
 
 		// Iterator
-		constexpr iterator begin() noexcept { return { this }; }
-		constexpr const_iterator begin() const noexcept { return { this }; }
+		inline iterator begin() noexcept { return { this }; }
+		inline const_iterator begin() const noexcept { return { this }; }
 		constexpr iterator end() noexcept { return {}; }
 		constexpr const_iterator end() const noexcept { return {}; }
 
@@ -260,8 +318,8 @@ namespace rsx
 		using section_storage_type = typename ranged_storage_type::section_storage_type;
 		using texture_cache_type = typename ranged_storage_type::texture_cache_type;
 
-		using block_container_type = std::list<section_storage_type>;
-		//using block_container_type = ranged_storage_block_list<section_storage_type, 32>;
+		//using block_container_type = std::list<section_storage_type>;
+		using block_container_type = ranged_storage_block_list<section_storage_type, 64>;
 		using iterator = typename block_container_type::iterator;
 		using const_iterator = typename block_container_type::const_iterator;
 
@@ -343,9 +401,6 @@ namespace rsx
 
 		inline section_storage_type& create_section()
 		{
-			if (sections.empty())
-				m_storage->on_ranged_block_first_use(*this);
-
 			auto &res = sections.emplace_back(this);
 			return res;
 		}
@@ -422,7 +477,9 @@ namespace rsx
 		{
 			(void)section; // silence unused warning without _AUDIT
 			AUDIT(section.exists());
-			exists_count++;
+
+			if (exists_count++ == 0)
+				m_storage->on_ranged_block_first_section_created(*this);
 		}
 
 		inline void on_section_resources_destroyed(const section_storage_type &section)
@@ -430,7 +487,8 @@ namespace rsx
 			(void)section; // silence unused warning without _AUDIT
 			AUDIT(!section.exists());
 			verify(HERE), exists_count > 0;
-			exists_count--;
+			if (--exists_count == 0)
+				m_storage->on_ranged_block_last_section_destroyed(*this);
 		}
 
 
@@ -482,7 +540,8 @@ namespace rsx
 	private:
 		block_type blocks[num_blocks];
 		texture_cache_type *m_tex_cache;
-		std::vector<block_type*> m_in_use;
+		std::unordered_set<block_type*> m_in_use;
+		bool m_purging = false;
 
 	public:
 		std::atomic<s32> m_unreleased_texture_objects = { 0 }; //Number of invalidated objects not yet freed from memory
@@ -560,20 +619,17 @@ namespace rsx
 
 		void purge_unreleased_sections()
 		{
-			u32 untracked = 0;
+			// We will be iterating through m_in_use
+			// do not allow the callbacks to touch m_in_use to avoid invalidating the iterator
+			m_purging = true;
 
 			//Reclaims all graphics memory consumed by dirty textures
-			//TODO ruipin: Only loop through used blocks
-			for (auto &block : m_in_use)
+			for (auto it = m_in_use.begin(); it != m_in_use.end();)
 			{
+				auto *block = *it;
+
 				for (auto &tex : *block)
 				{
-					if (!tex.is_tracked())
-					{
-						untracked++;
-						continue;
-					}
-
 					if (!tex.is_unreleased())
 						continue;
 
@@ -581,9 +637,15 @@ namespace rsx
 
 					tex.destroy();
 				}
+
+				if (block->get_exists_count() == 0)
+					it = m_in_use.erase(it);
+				else
+					it++;
 			}
 
-			AUDIT(m_unreleased_texture_objects == untracked);
+			m_purging = false;
+			AUDIT(m_unreleased_texture_objects == 0);
 		}
 
 
@@ -609,12 +671,23 @@ namespace rsx
 		{
 			u32 size = section.get_section_size();
 			u32 prev_size = m_texture_memory_in_use.fetch_sub(size);
-			verify(HERE), prev_size >= size;
+			ASSERT(prev_size >= size);
 		}
 
-		void on_ranged_block_first_use(block_type& block)
+		void on_ranged_block_first_section_created(block_type& block)
 		{
-			m_in_use.push_back(&block);
+			AUDIT(!m_purging);
+			AUDIT(m_in_use.find(&block) == m_in_use.end());
+			m_in_use.insert(&block);
+		}
+
+		void on_ranged_block_last_section_destroyed(block_type& block)
+		{
+			if (m_purging)
+				return;
+
+			AUDIT(m_in_use.find(&block) != m_in_use.end());
+			m_in_use.erase(&block);
 		}
 
 		/**
@@ -803,7 +876,7 @@ namespace rsx
 				{
 					for (auto &tex : block)
 					{
-						if(tex.is_locked())
+						if (tex.is_locked())
 							tex_cache_checker.add(tex.get_locked_range(), tex.get_protection());
 					}
 				}
@@ -980,7 +1053,7 @@ namespace rsx
 			set_dirty(true);
 
 			// Unlock
-			if(is_locked())
+			if (is_locked())
 				unprotect();
 
 			// Trigger callbacks
@@ -1099,7 +1172,7 @@ namespace rsx
 				m_block->on_section_unprotected(*derived());
 
 				// Blit and framebuffers may be unprotected and clean
-				if(context == texture_upload_context::shader_read)
+				if (context == texture_upload_context::shader_read)
 					set_dirty(true);
 			}
 			else if (old_prot == utils::protection::rw && prot != utils::protection::rw)

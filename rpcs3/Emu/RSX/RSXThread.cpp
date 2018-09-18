@@ -1350,10 +1350,12 @@ namespace rsx
 	{
 		if (!in_begin_end && state != FIFO_state::lock_wait)
 		{
-			if (!m_invalidated_memory_ranges.empty())
+			reader_lock lock(m_mtx_task);
+
+			if (m_invalidated_memory_range.valid())
 			{
-				std::lock_guard lock(m_mtx_task);
-				handle_invalidated_memory_ranges();
+				lock.upgrade();
+				handle_invalidated_memory_range();
 			}
 		}
 	}
@@ -2648,35 +2650,24 @@ namespace rsx
 
 	void thread::on_notify_memory_mapped(u32 address, u32 size)
 	{
-		// In the case where an unmap is followed shortly after by a remap,
+		// In the case where an unmap is followed shortly after by a remap of the same address space
 		// we must block until RSX has invalidated the memory
 		// or lock m_mtx_task and do it ourselves
 
+		if (m_rsx_thread_exiting)
+			return;
+
 		reader_lock lock(m_mtx_task);
 
-		if (!m_invalidated_memory_ranges.empty())
+		const auto map_range = address_range::create_start_length(address, size);
+		
+		if (!m_invalidated_memory_range.valid())
+			return;
+
+		if (m_invalidated_memory_range.overlaps(map_range))
 		{
-
-			const auto map_range = address_range::create_start_length(address, size);
-			bool must_invalidate = false;
-
-			for (const auto& inv_range : m_invalidated_memory_ranges)
-			{
-				if (!inv_range.valid())
-					continue;
-
-				if (inv_range.overlaps(map_range))
-				{
-					must_invalidate = true;
-					break;
-				}
-			}
-
-			if (must_invalidate)
-			{
-				lock.upgrade();
-				handle_invalidated_memory_ranges();
-			}
+			lock.upgrade();
+			handle_invalidated_memory_range();
 		}
 	}
 
@@ -2704,40 +2695,54 @@ namespace rsx
 				}
 			}
 
+			// Queue up memory invalidation
 			std::lock_guard lock(m_mtx_task);
-			m_invalidated_memory_ranges.merge(address_range::create_start_length(address, size));
+			const bool existing_range_valid = m_invalidated_memory_range.valid();
+			const auto unmap_range = address_range::create_start_length(address, size);
+			
+			if (existing_range_valid && m_invalidated_memory_range.touches(unmap_range))
+			{
+				// Merge range-to-invalidate in case of consecutive unmaps
+				m_invalidated_memory_range.set_min_max(unmap_range);
+			}
+			else
+			{
+				if (existing_range_valid)
+				{
+					// We can only delay consecutive unmaps.
+					// Otherwise, to avoid VirtualProtect failures, we need to do the invalidation here
+					handle_invalidated_memory_range();
+				}
+
+				m_invalidated_memory_range = unmap_range;
+			}
 		}
 	}
 
 	// NOTE: m_mtx_task lock must be acquired before calling this method
-	void thread::handle_invalidated_memory_ranges()
+	void thread::handle_invalidated_memory_range()
 	{
-		for (const auto& inv_range : m_invalidated_memory_ranges)
+		if (!m_invalidated_memory_range.valid())
+			return;
+
+		on_invalidate_memory_range(m_invalidated_memory_range);
+
+		// Clean the main memory super_ptr cache if invalidated
+		for (auto It = main_super_memory_block.begin(); It != main_super_memory_block.end();)
 		{
-			if (!inv_range.valid())
-				continue;
+			const auto block_range = address_range::create_start_length(It->first, It->second.size());
 
-			on_invalidate_memory_range(inv_range);
-
-			// Clean the main memory super_ptr cache if invalidated
-			for (auto It = main_super_memory_block.begin(); It != main_super_memory_block.end();)
+			if (m_invalidated_memory_range.overlaps(block_range))
 			{
-				const auto block_range = address_range::create_start_length(It->first, It->second.size());
-
-				if (inv_range.overlaps(block_range))
-				{
-					AUDIT(block_range.inside(inv_range)); // If block_range is only partially inside inv_range, we have a problem
-
-					It = main_super_memory_block.erase(It);
-				}
-				else
-				{
-					It++;
-				}
+				It = main_super_memory_block.erase(It);
+			}
+			else
+			{
+				It++;
 			}
 		}
 
-		m_invalidated_memory_ranges.clear();
+		m_invalidated_memory_range.invalidate();
 	}
 
 	//Pause/cont wrappers for FIFO ctrl. Never call this from rsx thread itself!
