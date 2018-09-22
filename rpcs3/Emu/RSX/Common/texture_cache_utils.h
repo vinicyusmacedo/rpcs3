@@ -949,6 +949,7 @@ namespace rsx
 
 	public:
 		u64 cache_tag = 0;
+		u64 last_write_tag = 0;
 
 		~cached_texture_section()
 		{
@@ -1001,6 +1002,9 @@ namespace rsx
 			sync_timestamp = 0ull;
 			synchronized = false;
 			flushed = false;
+
+			cache_tag = 0ull;
+			last_write_tag = 0ull;
 
 			num_writes = 0;
 			read_history.clear();
@@ -1240,9 +1244,10 @@ namespace rsx
 		/**
 		 * Misc
 		 */
-		void touch()
+		void touch(u64 tag)
 		{
 			num_writes++;
+			last_write_tag = tag;
 		}
 
 		void reset_write_statistics()

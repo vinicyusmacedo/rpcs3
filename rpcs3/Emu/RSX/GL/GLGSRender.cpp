@@ -1436,7 +1436,9 @@ void GLGSRender::flip(int buffer)
 	u32 buffer_height = display_buffers[buffer].height;
 	u32 buffer_pitch = display_buffers[buffer].pitch;
 
-	if ((u32)buffer < display_buffers_count && buffer_width && buffer_height && buffer_pitch)
+	if (!buffer_pitch) buffer_pitch = buffer_width * 4;
+
+	if ((u32)buffer < display_buffers_count && buffer_width && buffer_height)
 	{
 		// Calculate blit coordinates
 		coordi aspect_ratio;
@@ -1471,22 +1473,39 @@ void GLGSRender::flip(int buffer)
 
 		if (auto render_target_texture = m_rtts.get_texture_from_render_target_if_applicable(absolute_address))
 		{
-			buffer_width = render_target_texture->width();
-			buffer_height = render_target_texture->height();
+			if (render_target_texture->last_use_tag == m_rtts.write_tag)
+			{
+				image = render_target_texture->raw_handle();
+			}
+			else
+			{
+				const auto overlap_info = m_rtts.get_merged_texture_memory_region(absolute_address, buffer_width, buffer_height, buffer_pitch, 4);
+				verify(HERE), !overlap_info.empty();
 
-			image = render_target_texture->raw_handle();
+				if (overlap_info.back().surface == render_target_texture)
+				{
+					// Confirmed to be the newest data source in that range
+					image = render_target_texture->raw_handle();
+				}
+			}
+
+			if (image)
+			{
+				buffer_width = render_target_texture->width();
+				buffer_height = render_target_texture->height();
+			}
 		}
-		else if (auto surface = m_gl_texture_cache.find_texture_from_dimensions(absolute_address))
+		else if (auto surface = m_gl_texture_cache.find_texture_from_dimensions(absolute_address, buffer_width, buffer_height))
 		{
 			//Hack - this should be the first location to check for output
 			//The render might have been done offscreen or in software and a blit used to display
 			image = surface->get_raw_texture()->id();
 		}
-		else
+
+		if (!image)
 		{
 			LOG_WARNING(RSX, "Flip texture was not found in cache. Uploading surface from CPU");
 
-			if (!buffer_pitch) buffer_pitch = buffer_width * 4;
 			gl::pixel_unpack_settings unpack_settings;
 			unpack_settings.alignment(1).row_length(buffer_pitch / 4);
 
@@ -1597,19 +1616,17 @@ void GLGSRender::flip(int buffer)
 
 	// Cleanup
 	m_gl_texture_cache.on_frame_end();
-
-	m_rtts.free_invalidated();
 	m_vertex_cache->purge();
 
-	if (m_framebuffer_cache.size() > 32)
+	auto removed_textures = m_rtts.free_invalidated();
+	m_framebuffer_cache.remove_if([&](auto& fbo)
 	{
-		for (auto &fbo : m_framebuffer_cache)
-		{
-			fbo.remove();
-		}
+		if (fbo.deref_count >= 2) return true; // Remove if stale
+		if (fbo.references_any(removed_textures)) return true; // Remove if any of the attachments is invalid
 
-		m_framebuffer_cache.clear();
-	}
+		fbo.deref_count++;
+		return false;
+	});
 
 	//If we are skipping the next frame, do not reset perf counters
 	if (skip_frame) return;

@@ -2929,6 +2929,8 @@ void VKGSRender::flip(int buffer)
 	u32 buffer_height = display_buffers[buffer].height;
 	u32 buffer_pitch = display_buffers[buffer].pitch;
 
+	if (!buffer_pitch) buffer_pitch = buffer_width * 4; // TODO: Check avconf
+
 	coordi aspect_ratio;
 
 	sizei csize = { (s32)m_client_width, (s32)m_client_height };
@@ -3004,22 +3006,37 @@ void VKGSRender::flip(int buffer)
 	//Blit contents to screen..
 	vk::image* image_to_flip = nullptr;
 
-	if ((u32)buffer < display_buffers_count && buffer_width && buffer_height && buffer_pitch)
+	if ((u32)buffer < display_buffers_count && buffer_width && buffer_height)
 	{
 		rsx::tiled_region buffer_region = get_tiled_address(display_buffers[buffer].offset, CELL_GCM_LOCATION_LOCAL);
 		u32 absolute_address = buffer_region.address + buffer_region.base;
 
 		if (auto render_target_texture = m_rtts.get_texture_from_render_target_if_applicable(absolute_address))
 		{
-			image_to_flip = render_target_texture;
+			if (render_target_texture->last_use_tag == m_rtts.write_tag)
+			{
+				image_to_flip = render_target_texture;
+			}
+			else
+			{
+				const auto overlap_info = m_rtts.get_merged_texture_memory_region(absolute_address, buffer_width, buffer_height, buffer_pitch, 4);
+				verify(HERE), !overlap_info.empty();
+
+				if (overlap_info.back().surface == render_target_texture)
+				{
+					// Confirmed to be the newest data source in that range
+					image_to_flip = render_target_texture;
+				}
+			}
 		}
-		else if (auto surface = m_texture_cache.find_texture_from_dimensions(absolute_address))
+		else if (auto surface = m_texture_cache.find_texture_from_dimensions(absolute_address, buffer_width, buffer_height))
 		{
 			//Hack - this should be the first location to check for output
 			//The render might have been done offscreen or in software and a blit used to display
 			image_to_flip = surface->get_raw_texture();
 		}
-		else
+
+		if (!image_to_flip)
 		{
 			//Read from cell
 			image_to_flip = m_texture_cache.upload_image_simple(*m_current_command_buffer, absolute_address, buffer_width, buffer_height);
