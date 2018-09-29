@@ -1061,8 +1061,8 @@ namespace rsx
 			cache_tag = 0ull;
 			last_write_tag = 0ull;
 
-			num_writes = 0;
-			read_history.clear();
+			//num_writes = 0;
+			//read_history.clear();
 
 			readback_behaviour = rsx::memory_read_flags::flush_once;
 			view_flags = rsx::texture_create_flags::default_component_order;
