@@ -1,4 +1,4 @@
-#ifdef _WIN32
+﻿#ifdef _WIN32
 
 #include "Utilities/Log.h"
 #include "Utilities/StrFmt.h"
@@ -28,13 +28,18 @@ void XAudio2Thread::xa28_init(void* lib)
 		return;
 	}	
 
-	hr = create(&s_tls_xaudio2_instance, 0, XAUDIO2_DEFAULT_PROCESSOR);
+	hr = create(&s_tls_xaudio2_instance, 0, XAUDIO2_DEFAULT_PROCESSOR | XAUDIO2_DEBUG_ENGINE);
 	if (FAILED(hr))
 	{
 		LOG_ERROR(GENERAL, "XAudio2Thread : XAudio2Create() failed(0x%08x)", (u32)hr);
 		Emu.Pause();
 		return;
 	}
+
+	XAUDIO2_DEBUG_CONFIGURATION debug = { 0 };
+	debug.TraceMask = XAUDIO2_LOG_ERRORS | XAUDIO2_LOG_WARNINGS;
+	debug.BreakMask = XAUDIO2_LOG_ERRORS;
+	s_tls_xaudio2_instance->SetDebugConfiguration(&debug, 0);
 
 	hr = s_tls_xaudio2_instance->CreateMasteringVoice(&s_tls_master_voice, g_cfg.audio.downmix_to_2ch ? 2 : 8, 48000);
 	if (FAILED(hr))
