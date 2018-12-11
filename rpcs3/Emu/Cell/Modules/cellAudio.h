@@ -1,6 +1,7 @@
-#pragma once
+﻿#pragma once
 
 #include "Utilities/Thread.h"
+#include "Emu/Memory/vm.h"
 
 // Error codes
 enum CellAudioError : u32
@@ -113,6 +114,31 @@ struct audio_port
 
 	float level;
 	atomic_t<level_set_t> level_set;
+
+	u32 block_size() const
+	{
+		return channel * AUDIO_SAMPLES;
+	}
+
+	u32 position() const
+	{
+		return tag % block;
+	}
+
+	u32 buf_addr() const
+	{
+		return addr.addr() + position() * block_size() * sizeof(float);
+	}
+
+	u32 buf_size() const
+	{
+		return block_size() * sizeof(float);
+	}
+
+	to_be_t<float>* get_vm_ptr() const
+	{
+		return vm::_ptr<f32>(buf_addr());
+	}
 };
 
 class audio_thread
@@ -121,15 +147,19 @@ class audio_thread
 	vm::ptr<u64> m_indexes;
 
 	u64 m_counter{};
+	u64 m_played_counter{};
+	bool paused;
 
 public:
-	const u64 start_time = get_system_time();
 
+	u64 start_time;
 	std::array<audio_port, AUDIO_PORT_COUNT> ports;
 
 	std::vector<u64> keys;
 
 	void operator()();
+	bool mix(float out_buffer[8 * BUFFER_SIZE]);
+	void next_block();
 
 	audio_thread(vm::ptr<char> buf, vm::ptr<u64> ind)
 		: m_buffer(buf)

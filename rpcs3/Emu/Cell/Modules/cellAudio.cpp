@@ -1,4 +1,4 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include "Emu/System.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
@@ -38,288 +38,375 @@ void fmt_class_string<CellAudioError>::format(std::string& out, u64 arg)
 	});
 }
 
+bool audio_thread::mix(float out_buffer[8 * BUFFER_SIZE])
+{
+	float buf2ch[2 * BUFFER_SIZE]{}; // intermediate buffer for 2 channels
+	float buf8ch[8 * BUFFER_SIZE]{}; // intermediate buffer for 8 channels
+
+	bool first_mix = true;
+
+	// mixing:
+	for (auto& port : ports)
+	{
+		if (port.state != audio_port_state::started) continue;
+
+		auto buf = port.get_vm_ptr();
+
+		static const float k = 1.0f; // may be 1.0f
+		const float& m = port.level;
+
+		auto step_volume = [](audio_port& port) // part of cellAudioSetPortLevel functionality
+		{
+			const auto param = port.level_set.load();
+
+			if (param.inc != 0.0f)
+			{
+				port.level += param.inc;
+				const bool dec = param.inc < 0.0f;
+
+				if ((!dec && param.value - port.level <= 0.0f) || (dec && param.value - port.level >= 0.0f))
+				{
+					port.level = param.value;
+					port.level_set.compare_and_swap(param, { param.value, 0.0f });
+				}
+			}
+		};
+
+		if (port.channel == 2)
+		{
+			if (first_mix)
+			{
+				for (u32 i = 0; i < std::size(buf2ch); i += 2)
+				{
+					step_volume(port);
+
+					// reverse byte order
+					const float left = buf[i + 0] * m;
+					const float right = buf[i + 1] * m;
+
+					buf2ch[i + 0] = left;
+					buf2ch[i + 1] = right;
+
+					buf8ch[i * 4 + 0] = left;
+					buf8ch[i * 4 + 1] = right;
+					buf8ch[i * 4 + 2] = 0.0f;
+					buf8ch[i * 4 + 3] = 0.0f;
+					buf8ch[i * 4 + 4] = 0.0f;
+					buf8ch[i * 4 + 5] = 0.0f;
+					buf8ch[i * 4 + 6] = 0.0f;
+					buf8ch[i * 4 + 7] = 0.0f;
+				}
+				first_mix = false;
+			}
+			else
+			{
+				for (u32 i = 0; i < std::size(buf2ch); i += 2)
+				{
+					step_volume(port);
+
+					const float left = buf[i + 0] * m;
+					const float right = buf[i + 1] * m;
+
+					buf2ch[i + 0] += left;
+					buf2ch[i + 1] += right;
+
+					buf8ch[i * 4 + 0] += left;
+					buf8ch[i * 4 + 1] += right;
+				}
+			}
+		}
+		else if (port.channel == 8)
+		{
+			if (first_mix)
+			{
+				for (u32 i = 0; i < std::size(buf2ch); i += 2)
+				{
+					step_volume(port);
+
+					const float left = buf[i * 4 + 0] * m;
+					const float right = buf[i * 4 + 1] * m;
+					const float center = buf[i * 4 + 2] * m;
+					const float low_freq = buf[i * 4 + 3] * m;
+					const float rear_left = buf[i * 4 + 4] * m;
+					const float rear_right = buf[i * 4 + 5] * m;
+					const float side_left = buf[i * 4 + 6] * m;
+					const float side_right = buf[i * 4 + 7] * m;
+
+					const float mid = (center + low_freq) * 0.708f;
+					buf2ch[i + 0] = (left + rear_left + side_left + mid) * k;
+					buf2ch[i + 1] = (right + rear_right + side_right + mid) * k;
+
+					buf8ch[i * 4 + 0] = left;
+					buf8ch[i * 4 + 1] = right;
+					buf8ch[i * 4 + 2] = center;
+					buf8ch[i * 4 + 3] = low_freq;
+					buf8ch[i * 4 + 4] = rear_left;
+					buf8ch[i * 4 + 5] = rear_right;
+					buf8ch[i * 4 + 6] = side_left;
+					buf8ch[i * 4 + 7] = side_right;
+				}
+				first_mix = false;
+			}
+			else
+			{
+				for (u32 i = 0; i < std::size(buf2ch); i += 2)
+				{
+					step_volume(port);
+
+					const float left = buf[i * 4 + 0] * m;
+					const float right = buf[i * 4 + 1] * m;
+					const float center = buf[i * 4 + 2] * m;
+					const float low_freq = buf[i * 4 + 3] * m;
+					const float rear_left = buf[i * 4 + 4] * m;
+					const float rear_right = buf[i * 4 + 5] * m;
+					const float side_left = buf[i * 4 + 6] * m;
+					const float side_right = buf[i * 4 + 7] * m;
+
+					const float mid = (center + low_freq) * 0.708f;
+					buf2ch[i + 0] += (left + rear_left + side_left + mid) * k;
+					buf2ch[i + 1] += (right + rear_right + side_right + mid) * k;
+
+					buf8ch[i * 4 + 0] += left;
+					buf8ch[i * 4 + 1] += right;
+					buf8ch[i * 4 + 2] += center;
+					buf8ch[i * 4 + 3] += low_freq;
+					buf8ch[i * 4 + 4] += rear_left;
+					buf8ch[i * 4 + 5] += rear_right;
+					buf8ch[i * 4 + 6] += side_left;
+					buf8ch[i * 4 + 7] += side_right;
+				}
+			}
+		}
+		else
+		{
+			fmt::throw_exception("Unknown channel count (port=%u, channel=%d)" HERE, port.number, port.channel);
+		}
+	}
+
+	if (!first_mix)
+	{
+		// Copy output data (2ch or 8ch)
+		if (g_cfg.audio.downmix_to_2ch)
+		{
+			for (u32 i = 0; i < std::size(buf2ch); i++)
+			{
+				out_buffer[i] = buf2ch[i];
+			}
+		}
+		else
+		{
+			for (u32 i = 0; i < std::size(buf8ch); i++)
+			{
+				out_buffer[i] = buf8ch[i];
+			}
+		}
+	}
+
+	if (first_mix)
+	{
+		std::memset(out_buffer, 0, 8 * BUFFER_SIZE * sizeof(float));
+	}
+
+	if (g_cfg.audio.convert_to_u16)
+	{
+		// convert the data from float to u16 with clipping:
+		// 2x MULPS
+		// 2x MAXPS (optional)
+		// 2x MINPS (optional)
+		// 2x CVTPS2DQ (converts float to s32)
+		// PACKSSDW (converts s32 to s16 with signed saturation)
+
+		for (size_t i = 0; i < 8 * BUFFER_SIZE; i += 8)
+		{
+			const auto scale = _mm_set1_ps(0x8000);
+			_mm_store_ps(out_buffer + i / 2, _mm_castsi128_ps(_mm_packs_epi32(
+				_mm_cvtps_epi32(_mm_mul_ps(_mm_load_ps(out_buffer + i), scale)),
+				_mm_cvtps_epi32(_mm_mul_ps(_mm_load_ps(out_buffer + i + 4), scale)))));
+		}
+	}
+
+	u32 nonzero_count = 0;
+	const u32 min_nonzero = BUFFER_SIZE / 5;
+	u32* buf = reinterpret_cast<u32*>(out_buffer);
+	for (size_t i = 0; i < 8 * BUFFER_SIZE; i += 8)
+	{
+		if(buf[i] != 0)
+			nonzero_count++;
+
+		if (nonzero_count > min_nonzero)
+			break;
+	}
+
+	if (nonzero_count <= min_nonzero)
+		return false;
+
+	/* TODO
+	switch (m_dump.GetCh())
+	{
+	case 2: m_dump.WriteData(&buf2ch, sizeof(buf2ch)); break; // write file data (2 ch)
+	case 8: m_dump.WriteData(&buf8ch, sizeof(buf8ch)); break; // write file data (8 ch)
+	}*/
+
+	return true;
+}
+
+void audio_thread::next_block()
+{
+	// Memset to 0
+	for (auto& port : ports)
+	{
+		if (port.state != audio_port_state::started) continue;
+		memset(port.get_vm_ptr(), 0, port.buf_size());
+	}
+
+	// update indices
+	for (auto& port : ports)
+	{
+		if (port.state != audio_port_state::started) continue;
+
+		u32 next_index = (port.position() + 1) % port.block;
+		port.counter = m_counter;
+		port.tag++; // absolute index of block that will be read
+		m_indexes[port.number] = next_index; // write new value
+	}
+
+	// send aftermix event (normal audio event)
+
+	auto _locked = g_idm->lock<named_thread<audio_thread>>(0);
+
+	for (u64 key : keys)
+	{
+		// TODO: move out of the lock scope
+		if (auto queue = lv2_event_queue::find(key))
+		{
+			queue->send(0, 0, 0, 0); // TODO: check arguments
+		}
+	}
+}
+
 void audio_thread::operator()()
 {
 	thread_ctrl::set_native_priority(1);
 
-	AudioDumper m_dump(g_cfg.audio.dump_to_file ? 2 : 0); // Init AudioDumper for 2 channels if enabled
-
-	float buf2ch[2 * BUFFER_SIZE]{}; // intermediate buffer for 2 channels
-	float buf8ch[8 * BUFFER_SIZE]{}; // intermediate buffer for 8 channels
+	//AudioDumper m_dump(g_cfg.audio.dump_to_file ? 2 : 0); // Init AudioDumper for 2 channels if enabled
 
 	const u32 buf_sz = BUFFER_SIZE * (g_cfg.audio.convert_to_u16 ? 2 : 4) * (g_cfg.audio.downmix_to_2ch ? 2 : 8);
+	const u32 desired_buffer_ahead_count = 5;
 
 	std::unique_ptr<float[]> out_buffer[BUFFER_NUM];
 
+	// Reset out buffers
 	for (u32 i = 0; i < BUFFER_NUM; i++)
 	{
 		out_buffer[i].reset(new float[8 * BUFFER_SIZE] {});
 	}
 
+	// Open backend and enqueue silence
 	const auto audio = Emu.GetCallbacks().get_audio();
-	audio->Open(buf8ch, buf_sz);
+	audio->Open(out_buffer[0].get(), buf_sz);
+	for (u32 i = 1; i < desired_buffer_ahead_count; i++)
+	{
+		audio->AddData(out_buffer[i].get(), buf_sz);
+	}
 
+	m_counter = 0;
+	start_time = get_system_time();
 	while (thread_ctrl::state() != thread_state::aborting && !Emu.IsStopped())
 	{
 		if (Emu.IsPaused())
 		{
+			if (!paused)
+			{
+				paused = true;
+				audio->Stop();
+			}
+
 			thread_ctrl::wait_for(1000); // hack
 			continue;
+		}
+		else if (paused)
+		{
+			paused = false;
+			audio->Play();
 		}
 
 		const u64 stamp0 = get_system_time();
 
-		const u64 time_pos = stamp0 - start_time - Emu.GetPauseTime();
-
 		// TODO: send beforemix event (in ~2,6 ms before mixing)
 
+		const u64 time_pos = stamp0 - start_time - Emu.GetPauseTime();
+
 		// precise time of sleeping: 5,(3) ms (or 256/48000 sec)
-		const u64 expected_time = m_counter * AUDIO_SAMPLES * 1000000 / 48000;
-		if (expected_time >= time_pos)
+		const u64 time_per_count = AUDIO_SAMPLES * 1000000 / 48000;
+		const u64 expected_time = m_counter * time_per_count;
+		const s64 expected_delta = time_pos - expected_time;
+
+		const u64 m_counter_delays = m_counter + desired_buffer_ahead_count;
+		const u64 m_played_counter = time_pos / time_per_count;
+		const s64 buffer_ahead_count = m_counter_delays - m_played_counter;
+
+		bool starved = (buffer_ahead_count <= 0);
+		f32 exhausted_rate;
+		if (starved)
+		{
+			cellAudio.error("Audio buffer starved");
+			exhausted_rate = 1.0f;
+		}
+		else
+		{
+			s64 wait_until_delta;
+			if (buffer_ahead_count == desired_buffer_ahead_count)
+			{
+				exhausted_rate = 0.0f;
+				wait_until_delta = 0;
+			}
+			else
+			{
+				exhausted_rate = (desired_buffer_ahead_count - buffer_ahead_count) / static_cast<f32>(desired_buffer_ahead_count);
+				wait_until_delta = static_cast<s64>(-exhausted_rate * time_per_count);
+			}
+
+			if (expected_delta < wait_until_delta)
+			{
+				thread_ctrl::wait_for(1000); // hack
+				continue;
+			}
+		}
+
+		if (buffer_ahead_count != desired_buffer_ahead_count)
+		{
+			cellAudio.error("delta_counter=%d exhausted_rate=%3.2f%%", buffer_ahead_count, exhausted_rate * 100);
+		}
+
+		// Only advance the counter if we have actual audio data to play
+		const u32 out_pos = m_counter_delays % BUFFER_NUM;
+		bool mixed_data = mix(out_buffer[out_pos].get());
+
+		if (!mixed_data && buffer_ahead_count > 1)
 		{
 			thread_ctrl::wait_for(1000); // hack
 			continue;
 		}
 
-		m_counter++;
-
-		const u32 out_pos = m_counter % BUFFER_NUM;
-
-		bool first_mix = true;
-
-		// mixing:
-		for (auto& port : ports)
-		{
-			if (port.state != audio_port_state::started) continue;
-
-			const u32 block_size = port.channel * AUDIO_SAMPLES;
-			const u32 position = port.tag % port.block; // old value
-			const u32 buf_addr = port.addr.addr() + position * block_size * sizeof(float);
-
-			auto buf = vm::_ptr<f32>(buf_addr);
-
-			static const float k = 1.0f; // may be 1.0f
-			const float& m = port.level;
-
-			auto step_volume = [](audio_port& port) // part of cellAudioSetPortLevel functionality
-			{
-				const auto param = port.level_set.load();
-
-				if (param.inc != 0.0f)
-				{
-					port.level += param.inc;
-					const bool dec = param.inc < 0.0f;
-
-					if ((!dec && param.value - port.level <= 0.0f) || (dec && param.value - port.level >= 0.0f))
-					{
-						port.level = param.value;
-						port.level_set.compare_and_swap(param, { param.value, 0.0f });
-					}
-				}
-			};
-
-			if (port.channel == 2)
-			{
-				if (first_mix)
-				{
-					for (u32 i = 0; i < std::size(buf2ch); i += 2)
-					{
-						step_volume(port);
-
-						// reverse byte order
-						const float left = buf[i + 0] * m;
-						const float right = buf[i + 1] * m;
-
-						buf2ch[i + 0] = left;
-						buf2ch[i + 1] = right;
-
-						buf8ch[i * 4 + 0] = left;
-						buf8ch[i * 4 + 1] = right;
-						buf8ch[i * 4 + 2] = 0.0f;
-						buf8ch[i * 4 + 3] = 0.0f;
-						buf8ch[i * 4 + 4] = 0.0f;
-						buf8ch[i * 4 + 5] = 0.0f;
-						buf8ch[i * 4 + 6] = 0.0f;
-						buf8ch[i * 4 + 7] = 0.0f;
-					}
-					first_mix = false;
-				}
-				else
-				{
-					for (u32 i = 0; i < std::size(buf2ch); i += 2)
-					{
-						step_volume(port);
-
-						const float left = buf[i + 0] * m;
-						const float right = buf[i + 1] * m;
-
-						buf2ch[i + 0] += left;
-						buf2ch[i + 1] += right;
-
-						buf8ch[i * 4 + 0] += left;
-						buf8ch[i * 4 + 1] += right;
-					}
-				}
-			}
-			else if (port.channel == 8)
-			{
-				if (first_mix)
-				{
-					for (u32 i = 0; i < std::size(buf2ch); i += 2)
-					{
-						step_volume(port);
-
-						const float left = buf[i * 4 + 0] * m;
-						const float right = buf[i * 4 + 1] * m;
-						const float center = buf[i * 4 + 2] * m;
-						const float low_freq = buf[i * 4 + 3] * m;
-						const float rear_left = buf[i * 4 + 4] * m;
-						const float rear_right = buf[i * 4 + 5] * m;
-						const float side_left = buf[i * 4 + 6] * m;
-						const float side_right = buf[i * 4 + 7] * m;
-
-						const float mid = (center + low_freq) * 0.708f;
-						buf2ch[i + 0] = (left + rear_left + side_left + mid) * k;
-						buf2ch[i + 1] = (right + rear_right + side_right + mid) * k;
-
-						buf8ch[i * 4 + 0] = left;
-						buf8ch[i * 4 + 1] = right;
-						buf8ch[i * 4 + 2] = center;
-						buf8ch[i * 4 + 3] = low_freq;
-						buf8ch[i * 4 + 4] = rear_left;
-						buf8ch[i * 4 + 5] = rear_right;
-						buf8ch[i * 4 + 6] = side_left;
-						buf8ch[i * 4 + 7] = side_right;
-					}
-					first_mix = false;
-				}
-				else
-				{
-					for (u32 i = 0; i < std::size(buf2ch); i += 2)
-					{
-						step_volume(port);
-
-						const float left = buf[i * 4 + 0] * m;
-						const float right = buf[i * 4 + 1] * m;
-						const float center = buf[i * 4 + 2] * m;
-						const float low_freq = buf[i * 4 + 3] * m;
-						const float rear_left = buf[i * 4 + 4] * m;
-						const float rear_right = buf[i * 4 + 5] * m;
-						const float side_left = buf[i * 4 + 6] * m;
-						const float side_right = buf[i * 4 + 7] * m;
-
-						const float mid = (center + low_freq) * 0.708f;
-						buf2ch[i + 0] += (left + rear_left + side_left + mid) * k;
-						buf2ch[i + 1] += (right + rear_right + side_right + mid) * k;
-
-						buf8ch[i * 4 + 0] += left;
-						buf8ch[i * 4 + 1] += right;
-						buf8ch[i * 4 + 2] += center;
-						buf8ch[i * 4 + 3] += low_freq;
-						buf8ch[i * 4 + 4] += rear_left;
-						buf8ch[i * 4 + 5] += rear_right;
-						buf8ch[i * 4 + 6] += side_left;
-						buf8ch[i * 4 + 7] += side_right;
-					}
-				}
-			}
-			else
-			{
-				fmt::throw_exception("Unknown channel count (port=%u, channel=%d)" HERE, port.number, port.channel);
-			}
-
-			memset(buf, 0, block_size * sizeof(float));
-		}
-
-
-		if (!first_mix)
-		{
-			// Copy output data (2ch or 8ch)
-			if (g_cfg.audio.downmix_to_2ch)
-			{
-				for (u32 i = 0; i < std::size(buf2ch); i++)
-				{
-					out_buffer[out_pos][i] = buf2ch[i];
-				}
-			}
-			else
-			{
-				for (u32 i = 0; i < std::size(buf8ch); i++)
-				{
-					out_buffer[out_pos][i] = buf8ch[i];
-				}
-			}
-		}
-
 		const u64 stamp1 = get_system_time();
 
-		if (first_mix)
-		{
-			std::memset(out_buffer[out_pos].get(), 0, 8 * BUFFER_SIZE * sizeof(float));
-		}
+		// Advance the counter
+		m_counter++;
 
-		if (g_cfg.audio.convert_to_u16)
-		{
-			// convert the data from float to u16 with clipping:
-			// 2x MULPS
-			// 2x MAXPS (optional)
-			// 2x MINPS (optional)
-			// 2x CVTPS2DQ (converts float to s32)
-			// PACKSSDW (converts s32 to s16 with signed saturation)
-
-			for (size_t i = 0; i < 8 * BUFFER_SIZE; i += 8)
-			{
-				const auto scale = _mm_set1_ps(0x8000);
-				_mm_store_ps(out_buffer[out_pos].get() + i / 2, _mm_castsi128_ps(_mm_packs_epi32(
-					_mm_cvtps_epi32(_mm_mul_ps(_mm_load_ps(out_buffer[out_pos].get() + i), scale)),
-					_mm_cvtps_epi32(_mm_mul_ps(_mm_load_ps(out_buffer[out_pos].get() + i + 4), scale)))));
-			}
-		}
-
+		// Send to mixer
 		audio->AddData(out_buffer[out_pos].get(), buf_sz);
 
 		const u64 stamp2 = get_system_time();
 
-		{
-			// update indices:
-
-			for (u32 i = 0; i < AUDIO_PORT_COUNT; i++)
-			{
-				audio_port& port = ports[i];
-
-				if (port.state != audio_port_state::started) continue;
-
-				u32 position = port.tag % port.block; // old value
-				port.counter = m_counter;
-				port.tag++; // absolute index of block that will be read
-				m_indexes[i] = (position + 1) % port.block; // write new value
-			}
-
-			// send aftermix event (normal audio event)
-
-			auto _locked = g_idm->lock<named_thread<audio_thread>>(0);
-
-			for (u64 key : keys)
-			{
-				// TODO: move out of the lock scope
-				if (auto queue = lv2_event_queue::find(key))
-				{
-					queue->send(0, 0, 0, 0); // TODO: check arguments
-				}
-			}
-		}
+		next_block();
 
 		const u64 stamp3 = get_system_time();
 
-		switch (m_dump.GetCh())
-		{
-		case 2: m_dump.WriteData(&buf2ch, sizeof(buf2ch)); break; // write file data (2 ch)
-		case 8: m_dump.WriteData(&buf8ch, sizeof(buf8ch)); break; // write file data (8 ch)
-		}
-
-		cellAudio.trace("Audio perf: (access=%d, AddData=%d, events=%d, dump=%d)",
-			stamp1 - stamp0, stamp2 - stamp1, stamp3 - stamp2, get_system_time() - stamp3);
+		cellAudio.trace("Audio perf: (mix=%d, AddData=%d, next=%d)",
+			stamp1 - stamp0, stamp2 - stamp1, stamp3 - stamp2);
 	}
+
+	audio->Close();
 }
 
 error_code cellAudioInit()
