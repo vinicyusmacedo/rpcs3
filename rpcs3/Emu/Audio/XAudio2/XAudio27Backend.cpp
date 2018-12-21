@@ -133,7 +133,7 @@ void XAudio2Backend::xa27_open()
 	s_tls_source_voice->SetVolume(channels == 2 ? 1.0f : 4.0f);
 }
 
-bool XAudio2Backend::xa27_add(const void* src, u32 size)
+bool XAudio2Backend::xa27_add(const void* src, u32 num_samples)
 {
 	XAUDIO2_VOICE_STATE state;
 	s_tls_source_voice->GetState(&state);
@@ -147,7 +147,7 @@ bool XAudio2Backend::xa27_add(const void* src, u32 size)
 
 	XAUDIO2_BUFFER buffer;
 
-	buffer.AudioBytes = size * get_sample_size();
+	buffer.AudioBytes = num_samples * get_sample_size();
 	buffer.Flags = 0;
 	buffer.LoopBegin = XAUDIO2_NO_LOOP_REGION;
 	buffer.LoopCount = 0;

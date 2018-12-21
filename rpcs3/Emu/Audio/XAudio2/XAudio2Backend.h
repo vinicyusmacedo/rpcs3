@@ -8,6 +8,7 @@ class XAudio2Backend : public AudioBackend
 {
 	struct vtable
 	{
+		void(*init)(void*);
 		void(*destroy)();
 		void(*play)();
 		void(*flush)();
@@ -20,6 +21,8 @@ class XAudio2Backend : public AudioBackend
 	};
 
 	vtable m_funcs;
+	void* lib = nullptr;
+	bool initialized = false;
 
 	static void xa27_init(void*);
 	static void xa27_destroy();
@@ -49,7 +52,7 @@ public:
 
 	virtual const char* GetName() const override { return "XAudio2"; };
 
-	static const u32 capabilities = NON_BLOCKING | IS_PLAYING | GET_NUM_ENQUEUED_SAMPLES | SET_FREQUENCY_RATIO;
+	static const u32 capabilities = PLAY_PAUSE_FLUSH | IS_PLAYING | GET_NUM_ENQUEUED_SAMPLES | SET_FREQUENCY_RATIO;
 	virtual u32 GetCapabilities() const override { return capabilities;	};
 
 	virtual void Open(u32 /* num_buffers */) override;
@@ -59,7 +62,7 @@ public:
 	virtual void Pause() override;
 	virtual bool IsPlaying() override;
 
-	virtual bool AddData(const void* src, u32 size) override;
+	virtual bool AddData(const void* src, u32 num_samples) override;
 	virtual void Flush() override;
 
 	virtual u64 GetNumEnqueuedSamples() override;
