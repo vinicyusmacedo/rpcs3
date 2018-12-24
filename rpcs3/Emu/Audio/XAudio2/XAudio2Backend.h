@@ -4,47 +4,28 @@
 
 #include "Emu/Audio/AudioBackend.h"
 
+
 class XAudio2Backend : public AudioBackend
 {
-	struct vtable
+public:
+	class XAudio2Library
 	{
-		void(*init)(void*);
-		void(*destroy)();
-		void(*play)();
-		void(*flush)();
-		void(*stop)();
-		void(*open)();
-		bool(*is_playing)();
-		bool(*add)(const void*, u32);
-		u64(*enqueued_samples)();
-		f32(*set_freq_ratio)(f32);
+	public:
+		virtual void play() = 0;
+		virtual void flush() = 0;
+		virtual void stop() = 0;
+		virtual void open() = 0;
+		virtual bool is_playing() = 0;
+		virtual bool add(const void*, u32) = 0;
+		virtual u64 enqueued_samples() = 0;
+		virtual f32 set_freq_ratio(f32) = 0;
 	};
 
-	vtable m_funcs;
-	void* lib = nullptr;
-	bool initialized = false;
+private:
+	static XAudio2Library* xa27_init(void*);
+	static XAudio2Library* xa28_init(void*);
 
-	static void xa27_init(void*);
-	static void xa27_destroy();
-	static void xa27_play();
-	static void xa27_flush();
-	static void xa27_stop();
-	static void xa27_open();
-	static bool xa27_is_playing();
-	static bool xa27_add(const void*, u32);
-	static u64  xa27_enqueued_samples();
-	static f32  xa27_set_freq_ratio(f32);
-
-	static void xa28_init(void*);
-	static void xa28_destroy();
-	static void xa28_play();
-	static void xa28_flush();
-	static void xa28_stop();
-	static void xa28_open();
-	static bool xa28_is_playing();
-	static bool xa28_add(const void*, u32);
-	static u64  xa28_enqueued_samples();
-	static f32  xa28_set_freq_ratio(f32);
+	std::unique_ptr<XAudio2Library> lib = nullptr;
 
 public:
 	XAudio2Backend();
