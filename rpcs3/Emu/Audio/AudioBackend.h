@@ -40,21 +40,21 @@ public:
 	 */
 
 	// Start playing enqueued data
-	// Should be implemented if capabilities & NON_BLOCKING
+	// Should be implemented if capabilities & PLAY_PAUSE_FLUSH
 	virtual void Play()
 	{
 		fmt::throw_exception("Play() not implemented");
 	}
 
 	// Pause playing enqueued data
-	// Should be implemented if capabilities & NON_BLOCKING
+	// Should be implemented if capabilities & PLAY_PAUSE_FLUSH
 	virtual void Pause()
 	{
 		fmt::throw_exception("Pause() not implemented");
 	}
 
 	// Pause audio, and unqueue all currently queued buffers
-	// Should be implemented if capabilities & NON_BLOCKING
+	// Should be implemented if capabilities & PLAY_PAUSE_FLUSH
 	virtual void Flush()
 	{
 

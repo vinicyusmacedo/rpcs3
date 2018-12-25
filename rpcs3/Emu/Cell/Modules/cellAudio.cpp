@@ -135,11 +135,11 @@ void audio_ringbuffer::enqueue(const float* in_buffer)
 	// Dump audio if enabled
 	if (m_dump)
 	{
-		m_dump->WriteData(buf, buf_sz);
+		m_dump->WriteData(buf, cfg.audio_buffer_size);
 	}
 
 	// Enqueue audio
-	bool success = backend->AddData(buf, buf_sz);
+	bool success = backend->AddData(buf, AUDIO_BUFFER_SAMPLES * cfg.audio_channels);
 	if (!success)
 	{
 		cellAudio.error("Could not enqueue buffer onto audio backend. Attempting to recover...");
@@ -866,7 +866,6 @@ void cell_audio_thread::mix(float *out_buffer, s32 offset)
 
 		for (size_t i = 0; i < out_buffer_sz; i += 8)
 		{
-			// TODO ruipin: Revisit this
 			const auto scale = _mm_set1_ps(0x8000);
 			_mm_store_ps(out_buffer + i / 2, _mm_castsi128_ps(_mm_packs_epi32(
 				_mm_cvtps_epi32(_mm_mul_ps(_mm_load_ps(out_buffer + i), scale)),

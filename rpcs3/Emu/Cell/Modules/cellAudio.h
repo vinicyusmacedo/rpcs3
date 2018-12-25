@@ -177,7 +177,7 @@ struct cell_audio_config
 	const u32 audio_block_period = AUDIO_BUFFER_SAMPLES * 1000000 / audio_sampling_rate;
 
 	const u32 audio_buffer_length = AUDIO_BUFFER_SAMPLES * audio_channels;
-	const u32 audio_buffer_size = audio_buffer_length * sizeof(f32);
+	const u32 audio_buffer_size = audio_buffer_length * AudioBackend::get_sample_size();
 
 	/*
 	 * Buffering
