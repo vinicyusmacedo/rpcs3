@@ -716,6 +716,25 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> guiSettings, std:
 	//    / ____ \ |_| | (_| | | (_) |    | | (_| | |_) |
 	//   /_/    \_\__,_|\__,_|_|\___/     |_|\__,_|_.__/
 
+	auto EnableTimeStretchingOptions = [this](bool enabled)
+	{
+		ui->timeStretchingThresholdLabel->setEnabled(enabled);
+		ui->timeStretchingThreshold->setEnabled(enabled);
+	};
+	auto EnableBufferingOptions = [this, EnableTimeStretchingOptions](bool enabled)
+	{
+		ui->audioBufferDuration->setEnabled(enabled);
+		ui->audioBufferDurationLabel->setEnabled(enabled);
+		ui->enableTimeStretching->setEnabled(enabled);
+		EnableTimeStretchingOptions(enabled && ui->enableTimeStretching->isChecked());
+	};
+	auto EnableBuffering = [this, EnableBufferingOptions](const QString& text)
+	{
+		const bool enabled = text == "XAudio2" || text == "OpenAL";
+		ui->enableBuffering->setEnabled(enabled);
+		EnableBufferingOptions(enabled && ui->enableBuffering->isChecked());
+	};
+
 	// Comboboxes
 
 	xemu_settings->EnhanceComboBox(ui->audioOutBox, emu_settings::AudioRenderer);
@@ -724,6 +743,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> guiSettings, std:
 #else
 	SubscribeTooltip(ui->audioOutBox, json_audio["audioOutBox_Linux"].toString());
 #endif
+	connect(ui->audioOutBox, &QComboBox::currentTextChanged, EnableBuffering);
 
 	// Checkboxes
 
@@ -736,10 +756,26 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> guiSettings, std:
 	xemu_settings->EnhanceCheckBox(ui->downmix, emu_settings::DownmixStereo);
 	SubscribeTooltip(ui->downmix, json_audio["downmix"].toString());
 
+	xemu_settings->EnhanceCheckBox(ui->enableBuffering, emu_settings::EnableBuffering);
+	SubscribeTooltip(ui->enableBuffering, json_audio["enableBuffering"].toString());
+	connect(ui->enableBuffering, &QCheckBox::clicked, EnableBufferingOptions);
+
+	xemu_settings->EnhanceCheckBox(ui->enableTimeStretching, emu_settings::EnableTimeStretching);
+	SubscribeTooltip(ui->enableTimeStretching, json_audio["enableTimeStretching"].toString());
+	connect(ui->enableTimeStretching, &QCheckBox::clicked, EnableTimeStretchingOptions);
+
+	EnableBuffering(ui->audioOutBox->currentText());
+
 	// Sliders
 
 	EnhanceSlider(emu_settings::MasterVolume, ui->masterVolume, ui->masterVolumeLabel, tr("Master: %0 %"));
 	SubscribeTooltip(ui->masterVolume, json_audio["masterVolume"].toString());
+
+	EnhanceSlider(emu_settings::AudioBufferDuration, ui->audioBufferDuration, ui->audioBufferDurationLabel, tr("Audio Buffer Duration: %0 ms"));
+	SubscribeTooltip({ ui->audioBufferDuration, ui->audioBufferDurationLabel }, json_audio["audioBufferDuration"].toString());
+
+	EnhanceSlider(emu_settings::TimeStretchingThreshold, ui->timeStretchingThreshold, ui->timeStretchingThresholdLabel, tr("Time Stretching Threshold: %0 %"));
+	SubscribeTooltip({ ui->timeStretchingThreshold, ui->timeStretchingThresholdLabel }, json_audio["timeStretchingThreshold"].toString());
 
 	//    _____       __   ____    _______    _
 	//   |_   _|     / /  / __ \  |__   __|  | |
@@ -1405,6 +1441,14 @@ void settings_dialog::SubscribeTooltip(QObject* object, const QString& tooltip)
 {
 	m_descriptions[object] = tooltip;
 	object->installEventFilter(this);
+}
+
+void settings_dialog::SubscribeTooltip(QList<QObject*> objects, const QString& tooltip)
+{
+	for (auto obj : objects)
+	{
+		SubscribeTooltip(obj, tooltip);
+	}
 }
 
 // Thanks Dolphin
